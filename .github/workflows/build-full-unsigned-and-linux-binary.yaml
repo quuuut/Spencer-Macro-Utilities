@@ -48,9 +48,51 @@ jobs:
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  
+  build-macos:
+    runs-on: macos-latest
+    
+    permissions:
+      contents: write
 
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Check for changes
+        id: check_diff_macos
+        run: |
+          # check if there are any changes in the helper since the last commit
+          if git diff --quiet HEAD^ HEAD -- "visual studio/Resource Files/Suspend_Input_Helper_Source/"; then
+            echo "no_change=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no_change=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build macOS binary
+        if: steps.check_diff_macos.outputs.no_change == 'false'
+        run: |
+          clang++ -o ./visual\ studio/Resource\ Files/Suspend_Input_Helper_Mac_Binary ./visual\ studio/Resource\ Files/Suspend_Input_Helper_Source/macos_helper.cpp -O3 -std=c++11 -framework CoreFoundation -framework ApplicationServices
+
+      - name: Upload macOS binary
+        if: steps.check_diff_macos.outputs.no_change == 'false'
+        uses: actions/upload-artifact@v4
+        with: 
+          path: visual\ studio/Resource\ Files/Suspend_Input_Helper_Mac_Binary
+          name: Suspend_Input_Helper_Mac_Binary
+      - name: Commit and push macOS binary to repo
+        if: steps.check_diff_macos.outputs.no_change == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          git add "visual studio/Resource Files/Suspend_Input_Helper_Mac_Binary"
+          git commit -m "Update macOS binary"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
   build-windows:
-    needs: build-linux # Ensure linux build completes first
+    needs: [build-linux, build-macos] # Ensure linux and macOS builds complete first
     runs-on: windows-latest
     
     permissions:

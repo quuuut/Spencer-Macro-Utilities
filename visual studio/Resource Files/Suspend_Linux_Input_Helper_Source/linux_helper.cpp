@@ -603,7 +603,7 @@ void evdev_reader_thread(const std::string& device_path) {
         return;
     }
 
-    ioctl(evdev_fd, EVIOCGRAB, 1); // optional: grab device
+    ioctl(evdev_fd, EVIOCGRAB, 1); // grab device
 
     struct input_event ev;
     while (true) {
@@ -624,21 +624,12 @@ void evdev_reader_thread(const std::string& device_path) {
                     shared_data->key_states[vk_code].store(ev.value != 0, std::memory_order_release);
                 }
             }
-            emit_uinput(EV_KEY, ev.code, ev.value);
-            emit_uinput(EV_SYN, SYN_REPORT, 0);
+            emit_uinput(ev.type, ev.code, ev.value);
+            emit_uinput(EV_SYN, SYN_REPORT, 0); 
+        } else {
+            emit_uinput(ev.type, ev.code, ev.value);
+            emit_uinput(EV_SYN, SYN_REPORT, 0); 
         }
-        
-        else if (ev.type == EV_REL) {
-            emit_uinput(EV_REL, ev.code, ev.value);
-            emit_uinput(EV_SYN, SYN_REPORT, 0);
-        }
-        
-        else if (ev.type == EV_ABS) {
-            emit_uinput(EV_ABS, ev.code, ev.value);
-            emit_uinput(EV_SYN, SYN_REPORT, 0);
-        }
-
-        
     }
 
     ioctl(evdev_fd, EVIOCGRAB, 0); // release grab
