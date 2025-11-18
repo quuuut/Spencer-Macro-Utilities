@@ -63,7 +63,7 @@ jobs:
         id: check_diff_macos
         run: |
           # check if there are any changes in the helper since the last commit
-          if git diff --quiet HEAD^ HEAD -- "visual studio/Resource Files/Suspend_Input_Helper_Source/"; then
+          if git diff --quiet HEAD^ HEAD -- "visual studio/Resource Files/Suspend_Mac_Input_Helper_Source/"; then
             echo "no_change=true" >> "$GITHUB_OUTPUT"
           else
             echo "no_change=false" >> "$GITHUB_OUTPUT"
@@ -72,7 +72,7 @@ jobs:
       - name: Build macOS binary
         if: steps.check_diff_macos.outputs.no_change == 'false'
         run: |
-          clang++ -o ./visual\ studio/Resource\ Files/Suspend_Input_Helper_Mac_Binary ./visual\ studio/Resource\ Files/Suspend_Input_Helper_Source/macos_helper.cpp -O3 -std=c++11 -framework CoreFoundation -framework ApplicationServices
+          clang++ -o ./visual\ studio/Resource\ Files/Suspend_Input_Helper_Mac_Binary ./visual\ studio/Resource\ Files/Suspend_Mac_Input_Helper_Source/macos_helper.cpp -O3 -std=c++11 -framework CoreFoundation -framework ApplicationServices
 
       - name: Upload macOS binary
         if: steps.check_diff_macos.outputs.no_change == 'false'
