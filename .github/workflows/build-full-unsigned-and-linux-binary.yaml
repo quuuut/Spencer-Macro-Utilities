@@ -18,7 +18,7 @@ jobs:
         id: check_diff
         run: |
           # check if there are any changes in the helper since the last commit
-          if git diff --quiet HEAD^ HEAD -- "visual studio/Resource Files/Suspend_Input_Helper_Source/linux_helper.cpp"; then
+          if git diff --quiet HEAD^ HEAD -- "visual studio/Resource Files/Suspend_Linux_Input_Helper_Source/linux_helper.cpp"; then
             echo "no_change=true" >> "$GITHUB_OUTPUT"
           else
             echo "no_change=false" >> "$GITHUB_OUTPUT"
@@ -29,7 +29,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential
-          g++ -o ./visual\ studio/Resource\ Files/Suspend_Input_Helper_Linux_Binary ./visual\ studio/Resource\ Files/Suspend_Input_Helper_Source/linux_helper.cpp -O3 -std=c++11
+          g++ -o ./visual\ studio/Resource\ Files/Suspend_Input_Helper_Linux_Binary ./visual\ studio/Resource\ Files/Suspend_Linux_Input_Helper_Source/linux_helper.cpp -O3 -std=c++11
 
       - name: Upload linux binary
         if: steps.check_diff.outputs.no_change == 'false'
