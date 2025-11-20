@@ -110,6 +110,7 @@ END
 //
 
 IDR_BINARY1             Binary                  "Resource Files\\Suspend_Input_Helper_Linux_Binary"
+IDR_BINARY2             Binary                  "Resource Files\\Suspend_Input_Helper_Mac_Binary"
 
 #endif    // English (United States) resources
 /////////////////////////////////////////////////////////////////////////////

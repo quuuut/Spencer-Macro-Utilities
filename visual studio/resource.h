@@ -4,6 +4,7 @@
 //
 #define IDI_ICON1                       102
 #define IDR_BINARY1                     110
+#define IDR_BINARY2                     111
 
 // Next default values for new objects
 // 
