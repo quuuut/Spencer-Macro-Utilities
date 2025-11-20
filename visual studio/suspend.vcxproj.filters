@@ -118,5 +118,9 @@
     <None Include="Resource Files\Suspend_Input_Helper_Linux_Binary">
       <Filter>Resource Files</Filter>
     </None>
+    <None Include="resource files\binary2.bin">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Resource Files\Suspend_Input_Helper_Mac_Binary" />
   </ItemGroup>
 </Project>

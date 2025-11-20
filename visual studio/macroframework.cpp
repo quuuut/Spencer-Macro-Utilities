@@ -2246,8 +2246,8 @@ static void RunGUI()
 	// Set working directory to correct path
     SetWorkingDirectoryToExecutablePath();
 
-	// Setup Linux Compatibility Layer if Needed
-	InitLinuxCompatLayer();
+	// Setup Compatibility Layer if Needed
+	InitCompatLayer();
 
 	// Gui Thread has lower priority
 	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);

@@ -122,15 +122,15 @@ std::string ExecuteAndGetStdout(const std::string& cmd) {
 }
 
 // Main Logic for Launching Linux Helper
-static void InitLinuxCompatLayer() {
-    if (!IsRunningOnWine() || GetWineHostOS() != "linux") {
+static void InitCompatLayer() {
+    if (!IsRunningOnWine() || (GetWineHostOS() != "linux" && GetWineHostOS() != "darwin")) {
         g_isLinuxWine = false;
         return;
     }
 
     // Enable VSync in wine to hopefully reduce CPU usage (Does nothing sadly...)
     (void)_putenv("vblank=0");
-    std::cout << "Wine on Linux detected. Initializing helper process..." << std::endl;
+    std::cout << "Wine detected. Initializing helper process..." << std::endl;
 
     std::string helperWindowsPath; // Will be determined later
 
@@ -144,9 +144,14 @@ static void InitLinuxCompatLayer() {
         std::cout << "Helper not detected. Proceeding with extraction and launch..." << std::endl;
 
         // Find and Load the Embedded Binary Linux Helper within the exe
-        HRSRC hRes = FindResource(NULL, MAKEINTRESOURCE(IDR_BINARY1), TEXT("Binary"));
+        HRSRC hRes;
+        if (g_isLinuxWine) {
+            hRes = FindResource(NULL, MAKEINTRESOURCE(IDR_BINARY1), TEXT("Binary"));
+        } else {
+            hRes = FindResource(NULL, MAKEINTRESOURCE(IDR_BINARY2), TEXT("Binary"));
+        }
         if (!hRes) {
-            std::cerr << "Error: Could not find embedded resource IDR_BINARY1." << std::endl;
+            std::cerr << "Error: Could not find embedded resource." << std::endl;
             g_isLinuxWine = false;
             return;
         }
@@ -154,7 +159,7 @@ static void InitLinuxCompatLayer() {
         void* pResData = LockResource(hResLoad);
         DWORD dwSize = SizeofResource(NULL, hRes);
         if (!pResData || dwSize == 0) {
-            std::cerr << "Error: Could not load or lock embedded Linux helper binary. Resource might be empty." << std::endl;
+            std::cerr << "Error: Could not load or lock embedded helper binary. Resource might be empty." << std::endl;
             g_isLinuxWine = false;
             return;
         }
@@ -190,9 +195,9 @@ static void InitLinuxCompatLayer() {
             g_isLinuxWine = false;
             return;
         }
-        std::cout << "Helper's Linux path: " << helperLinuxPath << std::endl;
+        std::cout << "Helper's path: " << helperLinuxPath << std::endl;
 
-        // Make the File Executable using its Linux Path
+        // Make the File Executable using its Path
         std::string chmodCommand = "start /unix /bin/sh -c \"chmod +x '" + helperLinuxPath + "'\"";
         STARTUPINFOA si_chmod = {0};
         PROCESS_INFORMATION pi_chmod = {0};
@@ -223,14 +228,24 @@ static void InitLinuxCompatLayer() {
         }
 
         // Launch the Helper using a Graphical Sudo Wrapper
-        std::string sudoCommand = 
-            "start /unix /bin/sh -c \""
-            "if command -v zenity >/dev/null; then "
-                "zenity --password --title='Authentication Required' --text='Enter your password to run the Input Helper:' | sudo -S -p '' '" + helperLinuxPath + "' '" + currentExeName + "';"  // Added argument here
-            "elif command -v kdialog >/dev/null; then "
-                "kdialog --password 'Enter your password to run the Input Helper:' | sudo -S -p '' '" + helperLinuxPath + "' '" + currentExeName + "';"  // And here
-            "fi"
-            "\"";
+        std::string sudoCommand;
+        if (g_isLinuxWine) {
+            sudoCommand = 
+                "start /unix /bin/sh -c \""
+                "if command -v zenity >/dev/null; then "
+                    "zenity --password --title='Authentication Required' --text='Enter your password to run the Input Helper:' | sudo -S -p '' '" + helperLinuxPath + "' '" + currentExeName + "';"
+                "elif command -v kdialog >/dev/null; then "
+                    "kdialog --password 'Enter your password to run the Input Helper:' | sudo -S -p '' '" + helperLinuxPath + "' '" + currentExeName + "';"
+                "fi"
+                "\"";
+        } else {
+            sudoCommand =
+                "start /unix /bin/sh -c \""
+                "osascript -e 'Tell application \"System Events\" to display dialog \"Enter your password to run the Input Helper:\" default answer \"\" with hidden answer with title \"Authentication Required\"' "
+                "| grep -o 'text returned:[^,]*' | sed 's/text returned://;s/^ *//;s/ *$//' "
+                "| sudo -S -p '' '" + helperLinuxPath + "' '" + currentExeName + "'"
+                "\"";
+        }
 
         STARTUPINFOA si_exec = {0};
         PROCESS_INFORMATION pi_exec = {0};
@@ -330,213 +345,6 @@ static void InitLinuxCompatLayer() {
 
 static void ShutdownLinuxCompatLayer() {
     if (g_isLinuxWine) {
-        if (g_sharedData) UnmapViewOfFile(g_sharedData);
-        if (g_hMapFile) CloseHandle(g_hMapFile);
-    }
-}
-
-// Main Logic for Launching macOS Helper
-static void InitMacOSCompatLayer() {
-    if (!IsRunningOnWine() || GetWineHostOS() != "darwin") {
-        g_isMacOSWine = false;
-        return;
-    }
-
-    // Enable VSync in wine to hopefully reduce CPU usage
-    (void)_putenv("vblank=0");
-    std::cout << "Wine on macOS detected. Initializing helper process..." << std::endl;
-
-    std::string helperWindowsPath; // Will be determined later
-
-    // First, check if the shared memory file already exists. If it does, the helper is probably running.
-    HANDLE hFileCheck = CreateFileA(SHARED_MEM_FILE_WINE_PATH, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFileCheck != INVALID_HANDLE_VALUE) {
-        CloseHandle(hFileCheck);
-        std::cout << "Helper shared memory file found. Assuming helper is already running and proceeding to connect." << std::endl;
-    } else {
-        // If the file doesn't exist, we must extract and launch the helper.
-        std::cout << "Helper not detected. Proceeding with extraction and launch..." << std::endl;
-
-        // Find and Load the Embedded Binary macOS Helper within the exe
-        HRSRC hRes = FindResource(NULL, MAKEINTRESOURCE(IDR_BINARY2), TEXT("Binary"));
-        if (!hRes) {
-            std::cerr << "Error: Could not find embedded resource IDR_BINARY2." << std::endl;
-            g_isMacOSWine = false;
-            return;
-        }
-        HGLOBAL hResLoad = LoadResource(NULL, hRes);
-        void* pResData = LockResource(hResLoad);
-        DWORD dwSize = SizeofResource(NULL, hRes);
-        if (!pResData || dwSize == 0) {
-            std::cerr << "Error: Could not load or lock embedded macOS helper binary. Resource might be empty." << std::endl;
-            g_isMacOSWine = false;
-            return;
-        }
-
-        // Write the Binary to a Temporary File with a Fixed Name
-        char tempPath[MAX_PATH];
-        GetTempPathA(MAX_PATH, tempPath);
-        helperWindowsPath = std::string(tempPath) + MACOS_HELPER_BINARY_NAME;
-
-        std::ofstream outFile(helperWindowsPath, std::ios::binary | std::ios::trunc);
-        if (!outFile) {
-            std::cerr << "Error: Failed to create temporary file for macOS helper at: " << helperWindowsPath << std::endl;
-            g_isMacOSWine = false;
-            return;
-        }
-        outFile.write(static_cast<const char*>(pResData), dwSize);
-        outFile.close();
-        std::cout << "Helper binary written to: " << helperWindowsPath << std::endl;
-
-        // Translate the Windows Path to a macOS Path using winepath
-        std::string winepathCmd = "winepath.exe -u \"" + helperWindowsPath + "\"";
-        std::string helperMacPath = ExecuteAndGetStdout(winepathCmd);
-        
-        // Trim trailing whitespace/newlines from command output
-        size_t lastChar = helperMacPath.find_last_not_of(" \n\r\t");
-        if (std::string::npos != lastChar) {
-            helperMacPath.erase(lastChar + 1);
-        }
-
-        if (helperMacPath.empty()) {
-            std::cerr << "Error: 'winepath' failed to translate the helper path." << std::endl;
-            remove(helperWindowsPath.c_str());
-            g_isMacOSWine = false;
-            return;
-        }
-        std::cout << "Helper's macOS path: " << helperMacPath << std::endl;
-
-        // Make the File Executable using its macOS Path
-        std::string chmodCommand = "start /unix /bin/sh -c \"chmod +x '" + helperMacPath + "'\"";
-        STARTUPINFOA si_chmod = {0};
-        PROCESS_INFORMATION pi_chmod = {0};
-        si_chmod.cb = sizeof(si_chmod);
-        si_chmod.dwFlags = STARTF_USESHOWWINDOW;
-        si_chmod.wShowWindow = SW_HIDE;
-        std::vector<char> chmodCmdVector(chmodCommand.begin(), chmodCommand.end());
-        chmodCmdVector.push_back('\0');
-
-        if (!CreateProcessA(NULL, chmodCmdVector.data(), NULL, NULL, FALSE, 0, NULL, NULL, &si_chmod, &pi_chmod)) {
-            std::cerr << "Error: CreateProcess failed for chmod command." << std::endl;
-            remove(helperWindowsPath.c_str());
-            g_isMacOSWine = false;
-            return;
-        }
-
-        WaitForSingleObject(pi_chmod.hProcess, INFINITE); // Wait for chmod to finish
-        CloseHandle(pi_chmod.hProcess);
-        CloseHandle(pi_chmod.hThread);
-
-        char currentExePath[MAX_PATH];
-        GetModuleFileNameA(NULL, currentExePath, MAX_PATH);
-        std::string currentExeName = currentExePath;
-        // Extract just the filename without path
-        size_t lastSlash = currentExeName.find_last_of("\\/");
-        if (lastSlash != std::string::npos) {
-            currentExeName = currentExeName.substr(lastSlash + 1);
-        }
-
-        // Launch the Helper (macOS doesn't need sudo for accessibility features)
-        std::string launchCommand = "start /unix '" + helperMacPath + "' '" + currentExeName + "'";
-
-        STARTUPINFOA si_exec = {0};
-        PROCESS_INFORMATION pi_exec = {0};
-        si_exec.cb = sizeof(si_exec);
-        si_exec.dwFlags = STARTF_USESHOWWINDOW;
-        si_exec.wShowWindow = SW_HIDE;
-        std::vector<char> execCmdVector(launchCommand.begin(), launchCommand.end());
-        execCmdVector.push_back('\0');
-
-        if (!CreateProcessA(NULL, execCmdVector.data(), NULL, NULL, FALSE, 0, NULL, NULL, &si_exec, &pi_exec)) {
-            std::cerr << "Error: CreateProcess failed to launch the helper." << std::endl;
-            remove(helperWindowsPath.c_str());
-            g_isMacOSWine = false;
-            return;
-        }
-
-        CloseHandle(pi_exec.hProcess);
-        CloseHandle(pi_exec.hThread);
-
-        // Wait for the Helper's Shared Memory File to Appear
-        bool helperReady = false;
-        std::cout << "Waiting for helper to become ready (up to 60 seconds)..." << std::endl;
-
-        for (int i = 0; i < 60; ++i) {
-            HANDLE hPoll = CreateFileA(SHARED_MEM_FILE_WINE_PATH, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-            if (hPoll != INVALID_HANDLE_VALUE) {
-                CloseHandle(hPoll);
-                helperReady = true;
-                std::cout << "\nHelper is ready. Shared memory file detected." << std::endl;
-                break;
-            }
-            
-            // Add detailed logging on the first failure
-            if (i == 0) {
-                DWORD lastError = GetLastError();
-                if (lastError == ERROR_FILE_NOT_FOUND) {
-                    std::cout << "Log: Waiting for file '" << SHARED_MEM_FILE_WINE_PATH << "' to be created..." << std::flush;
-                } else if (lastError == ERROR_ACCESS_DENIED) {
-                    std::cerr << "\nWarning: Access was denied while checking for the shared memory file. This could indicate a permissions problem with the '/tmp' directory." << std::endl;
-                } else {
-                    std::cerr << "\nWarning: An unexpected error occurred while checking for the helper file. Win32 Error Code: " << lastError << std::endl;
-                }
-            }
-            
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-            std::cout << "." << std::flush;
-        }
-
-        if (!helperReady) {
-            std::cerr << "\nError: Timed out waiting for the helper process to create the shared memory file." << std::endl;
-            remove(helperWindowsPath.c_str()); // Clean up the helper binary on failure
-            g_isMacOSWine = false;
-            MessageBoxW(
-                NULL,
-                L"The macro cannot find the macOS helper loaded in ram after 60 seconds. Did you grant accessibility permissions? Try running the helper manually first.",
-                L"Error",
-                MB_ICONERROR | MB_OK
-            );
-            std::exit(1);
-            return;
-        }
-    }
-
-    // Map the Shared Memory Now That We Know It Exists
-    std::cout << "Connecting to shared memory at: " << SHARED_MEM_FILE_WINE_PATH << std::endl;
-    HANDLE hFile = CreateFileA(SHARED_MEM_FILE_WINE_PATH, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile == INVALID_HANDLE_VALUE) {
-        std::cerr << "Error: CreateFileA failed to open the helper's memory map file even after it was detected. Error: " << GetLastError() << std::endl;
-        if (!helperWindowsPath.empty()) remove(helperWindowsPath.c_str());
-        g_isMacOSWine = false;
-        return;
-    }
-
-    g_hMapFile = CreateFileMappingA(hFile, NULL, PAGE_READWRITE, 0, sizeof(SharedMemory), NULL);
-    CloseHandle(hFile);
-    if (g_hMapFile == NULL) {
-        std::cerr << "Error: CreateFileMappingA failed. Error: " << GetLastError() << std::endl;
-        if (!helperWindowsPath.empty()) remove(helperWindowsPath.c_str());
-        g_isMacOSWine = false;
-        return;
-    }
-
-    g_sharedData = (SharedMemory*)MapViewOfFile(g_hMapFile, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedMemory));
-    if (g_sharedData == nullptr) {
-        std::cerr << "Error: MapViewOfFile failed. Error: " << GetLastError() << std::endl;
-        CloseHandle(g_hMapFile);
-        if (!helperWindowsPath.empty()) remove(helperWindowsPath.c_str());
-        g_isMacOSWine = false;
-        return;
-    }
-
-    // Final Success
-    g_isMacOSWine = true;
-    g_isLinuxWine = true; // Use same compatibility layer functions
-    std::cout << "Initialization successful. Shared memory is now mapped." << std::endl;
-}
-
-static void ShutdownMacOSCompatLayer() {
-    if (g_isMacOSWine) {
         if (g_sharedData) UnmapViewOfFile(g_sharedData);
         if (g_hMapFile) CloseHandle(g_hMapFile);
     }

@@ -225,7 +225,9 @@
     <Font Include="Resource Files\LSANS.TTF" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="resource files\binary2.bin" />
     <None Include="Resource Files\Suspend_Input_Helper_Linux_Binary" />
+    <None Include="Resource Files\Suspend_Input_Helper_Mac_Binary" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
