@@ -167,7 +167,7 @@ static void InitCompatLayer() {
         // Write the Binary to a Temporary File with a Fixed Name
         char tempPath[MAX_PATH];
         GetTempPathA(MAX_PATH, tempPath);
-        helperWindowsPath = std::string(tempPath) + LINUX_HELPER_BINARY_NAME;
+        helperWindowsPath = std::string(tempPath) + (g_isLinuxWine ? LINUX_HELPER_BINARY_NAME : MACOS_HELPER_BINARY_NAME);
 
         std::ofstream outFile(helperWindowsPath, std::ios::binary | std::ios::trunc);
         if (!outFile) {
@@ -181,24 +181,24 @@ static void InitCompatLayer() {
 
         // Translate the Windows Path to a Linux Path using winepath
         std::string winepathCmd = "winepath.exe -u \"" + helperWindowsPath + "\"";
-        std::string helperLinuxPath = ExecuteAndGetStdout(winepathCmd);
+        std::string helperHostPath = ExecuteAndGetStdout(winepathCmd);
         
         // Trim trailing whitespace/newlines from command output
-        size_t lastChar = helperLinuxPath.find_last_not_of(" \n\r\t");
+        size_t lastChar = helperHostPath.find_last_not_of(" \n\r\t");
         if (std::string::npos != lastChar) {
-            helperLinuxPath.erase(lastChar + 1);
+            helperHostPath.erase(lastChar + 1);
         }
 
-        if (helperLinuxPath.empty()) {
+        if (helperHostPath.empty()) {
             std::cerr << "Error: 'winepath' failed to translate the helper path. Ensure wine-binfmt is configured." << std::endl;
             remove(helperWindowsPath.c_str());
             g_isLinuxWine = false;
             return;
         }
-        std::cout << "Helper's path: " << helperLinuxPath << std::endl;
+        std::cout << "Helper's path: " << helperHostPath << std::endl;
 
         // Make the File Executable using its Path
-        std::string chmodCommand = "start /unix /bin/sh -c \"chmod +x '" + helperLinuxPath + "'\"";
+        std::string chmodCommand = "start /unix /bin/sh -c \"chmod +x '" + helperHostPath + "'\"";
         STARTUPINFOA si_chmod = {0};
         PROCESS_INFORMATION pi_chmod = {0};
         si_chmod.cb = sizeof(si_chmod);
@@ -233,14 +233,14 @@ static void InitCompatLayer() {
             sudoCommand = 
                 "start /unix /bin/sh -c \""
                 "if command -v zenity >/dev/null; then "
-                    "zenity --password --title='Authentication Required' --text='Enter your password to run the Input Helper:' | sudo -S -p '' '" + helperLinuxPath + "' '" + currentExeName + "';"
+                    "zenity --password --title='Authentication Required' --text='Enter your password to run the Input Helper:' | sudo -S -p '' '" + helperHostPath + "' '" + currentExeName + "';"
                 "elif command -v kdialog >/dev/null; then "
-                    "kdialog --password 'Enter your password to run the Input Helper:' | sudo -S -p '' '" + helperLinuxPath + "' '" + currentExeName + "';"
+                    "kdialog --password 'Enter your password to run the Input Helper:' | sudo -S -p '' '" + helperHostPath + "' '" + currentExeName + "';"
                 "fi"
                 "\"";
         } else {
             // macOS doesn't need sudo, just launch directly
-            sudoCommand = "start /unix '" + helperLinuxPath + "' '" + currentExeName + "'";
+            sudoCommand = "start /unix '" + helperHostPath + "' '" + currentExeName + "'";
         }
 
         STARTUPINFOA si_exec = {0};
