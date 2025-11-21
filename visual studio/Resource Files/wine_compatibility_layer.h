@@ -58,6 +58,7 @@ static std::string GetWineHostOS() {
         wine_get_host_version(&sysname_ptr, nullptr);
         if (sysname_ptr) {
             std::string sysname_str(sysname_ptr);
+            std::cout << "Detected Wine host OS: " << sysname_str << std::endl;
             for (char &c : sysname_str) c = tolower(c);
             if (sysname_str == "darwin") {
                 g_isMacOSWine = true;
@@ -124,7 +125,6 @@ std::string ExecuteAndGetStdout(const std::string& cmd) {
 // Main Logic for Launching Linux Helper
 static void InitCompatLayer() {
     if (!IsRunningOnWine() || (GetWineHostOS() != "linux" && GetWineHostOS() != "darwin")) {
-        g_isLinuxWine = false;
         return;
     }
 
@@ -227,7 +227,7 @@ static void InitCompatLayer() {
             currentExeName = currentExeName.substr(lastSlash + 1);
         }
 
-        // Launch the Helper using a Graphical Sudo Wrapper
+        // Launch the Helper
         std::string sudoCommand;
         if (g_isLinuxWine) {
             sudoCommand = 
@@ -239,12 +239,8 @@ static void InitCompatLayer() {
                 "fi"
                 "\"";
         } else {
-            sudoCommand =
-                "start /unix /bin/sh -c \""
-                "osascript -e 'Tell application \"System Events\" to display dialog \"Enter your password to run the Input Helper:\" default answer \"\" with hidden answer with title \"Authentication Required\"' "
-                "| grep -o 'text returned:[^,]*' | sed 's/text returned://;s/^ *//;s/ *$//' "
-                "| sudo -S -p '' '" + helperLinuxPath + "' '" + currentExeName + "'"
-                "\"";
+            // macOS doesn't need sudo, just launch directly
+            sudoCommand = "start /unix '" + helperLinuxPath + "' '" + currentExeName + "'";
         }
 
         STARTUPINFOA si_exec = {0};
