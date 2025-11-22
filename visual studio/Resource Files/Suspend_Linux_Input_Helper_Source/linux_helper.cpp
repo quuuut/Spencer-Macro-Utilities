@@ -603,6 +603,19 @@ void evdev_reader_thread(const std::string& device_path) {
         return;
     }
 
+    
+    // Wait until no key is pressed before proceeding
+    while (true) {
+        bool any_pressed = false;
+        for (int i = 0; i < 256; ++i) {
+            if (shared_data->key_states[i].load(std::memory_order_acquire)) {
+                any_pressed = true;
+                break;
+            }
+        }
+        if (!any_pressed) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     ioctl(evdev_fd, EVIOCGRAB, 1); // grab device
 
     struct input_event ev;
