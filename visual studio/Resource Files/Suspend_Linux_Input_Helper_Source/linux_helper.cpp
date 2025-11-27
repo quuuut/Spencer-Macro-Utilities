@@ -45,7 +45,7 @@ void cleanup(int);
 bool interactive_device_detection(std::string& out_keyboard_path, std::string& out_mouse_path);
 int setup_uinput_device();
 void emit_uinput(int type, int code, int val);
-void evdev_reader_thread(const std::string& device_path);
+void evdev_reader_thread(const std::string& device_path, bool is_keyboard);
 void command_processor_thread();
 void special_action_thread();
 void fastkey_thread();
@@ -220,6 +220,14 @@ int main(int argc, char* argv[]) {
     std::cout << "[Helper] Using Keyboard: " << keyboard_path << std::endl;
     std::cout << "[Helper] Using Mouse:    " << mouse_path << std::endl;
 
+    // === Step 3: Setup keyboard grab ===
+    int keyboard_fd = open(keyboard_path.c_str(), O_RDONLY | O_NONBLOCK);
+    if (keyboard_fd < 0) {
+        perror("[Helper] CRITICAL: Failed to open keyboard device");
+        cleanup(0);
+        return 1;
+    }
+
     // === Step 3: Setup Virtual Devices and Worker Threads ===
     std::cout << "[Helper] Starting up core services..." << std::endl;
     uinput_fd = setup_uinput_device();
@@ -230,8 +238,8 @@ int main(int argc, char* argv[]) {
     std::cout << "[Helper] Virtual input device created." << std::endl;
     
     std::cout << "[Helper] Launching worker threads. Press Ctrl+C to exit." << std::endl;
-    std::thread keyboard_reader(evdev_reader_thread, keyboard_path);
-    std::thread mouse_reader(evdev_reader_thread, mouse_path);
+    std::thread keyboard_reader(evdev_reader_thread, keyboard_path, true);
+    std::thread mouse_reader(evdev_reader_thread, mouse_path, false);
     std::thread processor(command_processor_thread);
     std::thread special_actions(special_action_thread);
     std::thread fastkey(fastkey_thread);
@@ -596,27 +604,12 @@ bool interactive_device_detection(std::string& out_keyboard_path, std::string& o
     return true;
 }
 
-void evdev_reader_thread(const std::string& device_path) {
+void evdev_reader_thread(const std::string& device_path, bool is_keyboard) {
     int evdev_fd = open(device_path.c_str(), O_RDONLY | O_NONBLOCK);
     if (evdev_fd < 0) {
         perror(("[ReaderThread] Failed to open " + device_path).c_str());
         return;
     }
-
-    
-    // Wait until no key is pressed before proceeding
-    while (true) {
-        bool any_pressed = false;
-        for (int i = 0; i < 256; ++i) {
-            if (shared_data->key_states[i].load(std::memory_order_acquire)) {
-                any_pressed = true;
-                break;
-            }
-        }
-        if (!any_pressed) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    ioctl(evdev_fd, EVIOCGRAB, 1); // grab device
 
     struct input_event ev;
     while (true) {
@@ -644,8 +637,6 @@ void evdev_reader_thread(const std::string& device_path) {
             emit_uinput(EV_SYN, SYN_REPORT, 0); 
         }
     }
-
-    ioctl(evdev_fd, EVIOCGRAB, 0); // release grab
     close(evdev_fd);
 }
 
