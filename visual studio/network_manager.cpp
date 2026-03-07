@@ -333,7 +333,7 @@ void RobloxLogScannerThread()
 			auto convert_to_wine_path =
 				[](const std::string &unix_path) -> std::string {
 				std::string cmd = "winepath -w \"" + unix_path + "\" 2>/dev/null";
-				FILE *pipe = popen(cmd.c_str(), "r");
+				FILE *pipe = _popen(cmd.c_str(), "r");
 				if (!pipe)
 					return "";
 
@@ -350,7 +350,7 @@ void RobloxLogScannerThread()
 						result.pop_back();
 					}
 				}
-				pclose(pipe);
+				_pclose(pipe);
 				return result;
 			};
 
