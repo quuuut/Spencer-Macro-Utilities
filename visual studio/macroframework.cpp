@@ -2589,92 +2589,94 @@ static void RunGUI() {
 						SafeCloseWinDivert();
                     }
 
-					ImGui::Checkbox("Show Lagswitch Status Overlay", &show_lag_overlay);
-
-					if (!show_lag_overlay) ImGui::BeginDisabled();
-					ImGui::Indent();
-    
-					ImGui::Checkbox("Hide When Not Actively Lagswitching", &overlay_hide_inactive);
-    
-					// Get Screen resolution for sliders
-					int screenW = GetSystemMetrics(SM_CXSCREEN);
-					int screenH = GetSystemMetrics(SM_CYSCREEN);
-
-					// Initialize position to top-right 20% if first time
-					if (overlay_x == -1) { overlay_x = (int)(screenW * 0.8f); }
-
-					ImGui::PushItemWidth(500);
-
-					ImGui::SliderInt("Overlay X", &overlay_x, 0, screenW);
-					ImGui::SliderInt("Overlay Y", &overlay_y, 0, screenH);
-					ImGui::SliderInt("Text Size", &overlay_size, 10, 100);
-    
-					ImGui::Checkbox("Add Background", &overlay_use_bg);
-					if (!overlay_use_bg) ImGui::BeginDisabled();
-					float colors[3] = { overlay_bg_r, overlay_bg_g, overlay_bg_b };
-					if (ImGui::ColorEdit3("Background Color", colors)) {
-						overlay_bg_r = colors[0];
-						overlay_bg_g = colors[1];
-						overlay_bg_b = colors[2];
+					if (!g_isLinuxWine) {
+						ImGui::Checkbox("Show Lagswitch Status Overlay", &show_lag_overlay);
+						
+						if (!show_lag_overlay) ImGui::BeginDisabled();
+						ImGui::Indent();
+						
+						ImGui::Checkbox("Hide When Not Actively Lagswitching", &overlay_hide_inactive);
+						
+						// Get Screen resolution for sliders
+						int screenW = GetSystemMetrics(SM_CXSCREEN);
+						int screenH = GetSystemMetrics(SM_CYSCREEN);
+						
+						// Initialize position to top-right 20% if first time
+						if (overlay_x == -1) { overlay_x = (int)(screenW * 0.8f); }
+						
+						ImGui::PushItemWidth(500);
+						
+						ImGui::SliderInt("Overlay X", &overlay_x, 0, screenW);
+						ImGui::SliderInt("Overlay Y", &overlay_y, 0, screenH);
+						ImGui::SliderInt("Text Size", &overlay_size, 10, 100);
+						
+						ImGui::Checkbox("Add Background", &overlay_use_bg);
+						if (!overlay_use_bg) ImGui::BeginDisabled();
+						float colors[3] = { overlay_bg_r, overlay_bg_g, overlay_bg_b };
+						if (ImGui::ColorEdit3("Background Color", colors)) {
+							overlay_bg_r = colors[0];
+							overlay_bg_g = colors[1];
+							overlay_bg_b = colors[2];
+						}
+						ImGui::PopItemWidth();
+						
+						if (!overlay_use_bg) ImGui::EndDisabled();
+						
+						ImGui::Unindent();
+						if (!show_lag_overlay) ImGui::EndDisabled();
+						
+						ImGui::Separator();
+						ImGui::NewLine();
+						ImGui::Separator();
+						
+						// The Admin/Load Button Logic
+						if (ImGui::Button(bWinDivertEnabled ? "Disable WinDivert" : "Enable WinDivert")) {
+							if (!bWinDivertEnabled) {
+								if (IsRunAsAdmin()) {
+									if (TryLoadWinDivert()) {
+										bWinDivertEnabled = true;
+										g_windivert_running = true;
+										WinDivertThread = std::thread(WindivertWorkerThread);
+									} else {
+										std::cerr << "Failed to load WinDivert files." << std::endl;
+									}
+								} else {
+									if (DontShowAdminWarning) {
+										RestartAsAdmin();
+									} else {
+										bShowAdminPopup = true;
+									}
+								}
+							} else {
+								bWinDivertEnabled = false;
+								g_windivert_running = false;
+								g_windivert_blocking = false; // Reset blocking state
+								SafeCloseWinDivert(); // Kill the thread loop
+								if (WinDivertThread.joinable()) WinDivertThread.join();
+							}
+						}
+						
+						ImGui::SameLine();
+						ImGui::TextColored(bWinDivertEnabled ? GetCurrentTheme().success_color : GetCurrentTheme().error_color, 
+						bWinDivertEnabled ? "Driver Running" : "Driver Not Running");
+						
 					}
-					ImGui::PopItemWidth();
-
-					if (!overlay_use_bg) ImGui::EndDisabled();
-
-					ImGui::Unindent();
-					if (!show_lag_overlay) ImGui::EndDisabled();
-
-					ImGui::Separator();
-					ImGui::NewLine();
-					ImGui::Separator();
-
-                    // The Admin/Load Button Logic
-                    if (ImGui::Button(bWinDivertEnabled ? "Disable WinDivert" : "Enable WinDivert")) {
-                        if (!bWinDivertEnabled) {
-                            if (IsRunAsAdmin()) {
-                                if (TryLoadWinDivert()) {
-                                    bWinDivertEnabled = true;
-                                    g_windivert_running = true;
-                                    WinDivertThread = std::thread(WindivertWorkerThread);
-                                } else {
-                                    std::cerr << "Failed to load WinDivert files." << std::endl;
-                                }
-                            } else {
-                                if (DontShowAdminWarning) {
-                                    RestartAsAdmin();
-                                } else {
-                                    bShowAdminPopup = true;
-                                }
-                            }
-                        } else {
-                            bWinDivertEnabled = false;
-                            g_windivert_running = false;
-                            g_windivert_blocking = false; // Reset blocking state
-                            SafeCloseWinDivert(); // Kill the thread loop
-                            if (WinDivertThread.joinable()) WinDivertThread.join();
-                        }
-                    }
-
-                    ImGui::SameLine();
-                    ImGui::TextColored(bWinDivertEnabled ? GetCurrentTheme().success_color : GetCurrentTheme().error_color, 
-                                       bWinDivertEnabled ? "Driver Running" : "Driver Not Running");
-                    
-                    if (bWinDivertEnabled) {
-                        ImGui::SameLine();
+                    if (bWinDivertEnabled || g_isLinuxWine) {
+						ImGui::SameLine();
                         ImGui::Text(" |  Status: ");
                         ImGui::SameLine();
                         ImGui::TextColored(g_windivert_blocking ? GetCurrentTheme().error_color : GetCurrentTheme().success_color, 
-                            g_windivert_blocking ? "LAGGING" : "Clear");
+						g_windivert_blocking ? "LAGGING" : "Clear");
                         
                         // Debug: Show filter string
                         // ImGui::TextDisabled("Filter: %s", g_current_windivert_filter.c_str());
                     }
 				}
-
+				
             } else {
-                ImGui::TextWrapped("Select a section to see its settings.");
+				ImGui::TextWrapped("Select a section to see its settings.");
             }
-
+			
             ImGui::EndChild(); // End right section
             
 

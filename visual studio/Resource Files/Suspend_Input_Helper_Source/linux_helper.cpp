@@ -285,6 +285,16 @@ void fastkey_thread() {
     }
 }
 
+void lagswitch_toggle(bool state, std::string nadapter) {
+    if (state) {
+        
+        printf("[Helper] Lag switch enabled (no-op in this implementation)\n");
+    } else {
+        // Disable lag switch
+        printf("[Helper] Lag switch disabled (no-op in this implementation)\n");
+    }
+}
+
 void command_processor_thread() {
     while (true) {
         uint32_t read_idx = shared_data->read_index.load(std::memory_order_acquire);
@@ -339,6 +349,12 @@ void command_processor_thread() {
             } else if (type == CMD_DESYNC_DISABLE) {
                 printf("[Helper] Received CMD_DESYNC_DISABLE\n");
                 isdesync = false;
+            } else if (type == CMD_LAGSWITCH_ENABLE) {
+                // Not implemented in this helper, but you could set a flag here if needed
+                printf("[Helper] Received CMD_LAGSWITCH_ENABLE (no-op in this implementation)\n");
+            } else if (type == CMD_LAGSWITCH_DISABLE) {
+                // Not implemented in this helper, but you could clear a flag here if needed
+                printf("[Helper] Received CMD_LAGSWITCH_DISABLE (no-op in this implementation)\n");
             }
 
             shared_data->read_index.store((read_idx + 1) & (COMMAND_BUFFER_SIZE - 1), std::memory_order_release);
