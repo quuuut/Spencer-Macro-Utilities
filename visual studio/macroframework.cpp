@@ -2910,7 +2910,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
 
 	// Setup suspension
 
-	std::thread actionThread(Speedglitchloop); // Start a separate thread for item desync loop, lets functions run alongside
+	std::thread actionThread(Speedglitchloop);
 	std::thread actionThread2(ItemDesyncLoop);
 	std::thread actionThread3(SpeedglitchloopHHJ);
 	std::thread actionThread4(SpamKeyLoop);

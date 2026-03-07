@@ -727,272 +727,63 @@ void SuspendOrResumeProcesses_Compat(const std::vector<DWORD>& pids, const std::
     }
 }
 
-std::vector<HANDLE> GetProcessHandles_Compat(const std::vector<DWORD>& pids, DWORD accessRights) {
-    std::vector<HANDLE> handles;
+void SetLagswitchEnabled(bool enable) {
     if (g_isLinuxWine) {
-        // On Linux, we don't need handles. The PID is enough.
-        return handles;
-    } 
-    else {
-        // Original Windows logic
-        for (DWORD pid : pids) {
-            HANDLE hProcess = OpenProcess(accessRights, FALSE, pid);
-            if (hProcess != NULL) {
-                handles.push_back(hProcess);
-            }
-        }
+        Command cmd = {};
+        cmd.type.store(enable ? CMD_LAGSWITCH_ENABLE : CMD_LAGSWITCH_DISABLE, std::memory_order_relaxed);
+        EnqueueCommand(cmd);
+    } else {
+        // Windows: directly set the blocking state
+        g_windivert_blocking = enable;
     }
-    return handles;
 }
 
-std::vector<DWORD> FindProcessIdsByName_Compat(const std::string& targetName, bool findAll) {
-    std::vector<DWORD> pids;
+void SetLagswitchIPs(const std::vector<std::string>& ips) {
     if (g_isLinuxWine) {
-        std::string linux_name = targetName;
-        size_t pos = linux_name.rfind(".exe");
-        if (pos != std::string::npos && pos == linux_name.length() - 4) {
-            linux_name.erase(pos);
-        }
-
         SpecialAction action = {};
-        // Check if we want to store all processes or only the first one
-        action.command.store(findAll ? SA_FIND_ALL_PROCESSES : SA_FIND_NEWEST_PROCESS);
-        strcpy_s(action.process_name, sizeof(action.process_name), linux_name.c_str());
-
-        if (Linux_ExecuteSpecialAction(action)) {
-            // Read the list of PIDs from the response
-            int count = action.response_pid_count.load();
-            for (int i = 0; i < count; ++i) {
-                pids.push_back(action.response_pids[i]);
-            }
-        }
-    } 
-    else {
-        // Convert std::string to std::wstring
-        if (targetName.empty()) return {};
-
-        int size_needed = MultiByteToWideChar(CP_UTF8, 0, &targetName[0], (int)targetName.size(), NULL, 0);
-        if (size_needed <= 0) return {};
-
-        std::wstring targetNameW(size_needed, 0);
-        MultiByteToWideChar(CP_UTF8, 0, &targetName[0], (int)targetName.size(), &targetNameW[0], size_needed);
+        action.command.store(SA_SET_LAGSWITCH_IPS, std::memory_order_relaxed);
+        action.response_success.store(false);
+        action.response_pid_count.store(0);
         
-        HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if (hSnapshot == INVALID_HANDLE_VALUE) return {};
-
-        PROCESSENTRY32 pe;
-        pe.dwSize = sizeof(PROCESSENTRY32);
-
-        if (findAll) {
-            if (Process32First(hSnapshot, &pe)) {
-                do {
-                    if (_wcsicmp(pe.szExeFile, targetNameW.c_str()) == 0) {
-                        pids.push_back(pe.th32ProcessID);
-                    }
-                } while (Process32Next(hSnapshot, &pe));
-            }
-        } else { // Find newest process
-            DWORD selectedPID = 0;
-            ULONGLONG newestCreationTime = 0;
-            bool foundAny = false;
-            if (Process32First(hSnapshot, &pe)) {
-                do {
-                    if (_wcsicmp(pe.szExeFile, targetNameW.c_str()) == 0) {
-                        HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
-                        if (hProcess) {
-                            FILETIME ftCreation, ftExit, ftKernel, ftUser;
-                            if (GetProcessTimes(hProcess, &ftCreation, &ftExit, &ftKernel, &ftUser)) {
-                                ULONGLONG creationTime = (static_cast<ULONGLONG>(ftCreation.dwHighDateTime) << 32) | ftCreation.dwLowDateTime;
-                                if (!foundAny || creationTime > newestCreationTime) {
-                                    newestCreationTime = creationTime;
-                                    selectedPID = pe.th32ProcessID;
-                                    foundAny = true;
-                                }
-                            }
-                            CloseHandle(hProcess);
-                        }
-                    }
-                } while (Process32Next(hSnapshot, &pe));
-            }
-            if (foundAny) {
-                pids.push_back(selectedPID);
-            }
+        // Serialize IPs into process_name field (comma-separated)
+        std::string ip_list;
+        for (size_t i = 0; i < ips.size(); ++i) {
+            ip_list += ips[i];
+            if (i < ips.size() - 1) ip_list += ",";
         }
-        CloseHandle(hSnapshot);
+        strcpy_s(action.process_name, sizeof(action.process_name), ip_list.c_str());
+        
+        Linux_ExecuteSpecialAction(action);
     }
-    return pids;
+    // Windows: IP filtering is handled by WinDivert filter in network_manager.cpp
 }
 
-// This translates a single character into the key actions needed to type it on a standard US keyboard.
-KeyAction CharToKeyAction_Compat(char c) {
-    // Lowercase letters
-    if (c >= 'a' && c <= 'z') {
-        return { (WORD)(toupper(c)), false };
+void SetLagswitchDirection(bool inbound, bool outbound) {
+    if (g_isLinuxWine) {
+        Command cmd = {};
+        cmd.type.store(CMD_LAGSWITCH_SET_DIRECTION, std::memory_order_relaxed);
+        cmd.value.store((inbound ? 1 : 0) | ((outbound ? 1 : 0) << 1), std::memory_order_relaxed);
+        EnqueueCommand(cmd);
     }
-    // Uppercase letters
-    if (c >= 'A' && c <= 'Z') {
-        return { (WORD)c, true };
-    }
-    // Numbers
-    if (c >= '0' && c <= '9') {
-        return { (WORD)c, false };
-    }
-
-    // Handle symbols and punctuation
-    switch (c) {
-        case ' ': return { VK_SPACE, false };
-        case '\n': return { VK_RETURN, false };
-        case '\t': return { VK_TAB, false };
-
-        // Number row symbols (require shift)
-        case '!': return { '1', true };
-        case '@': return { '2', true };
-        case '#': return { '3', true };
-        case '$': return { '4', true };
-        case '%': return { '5', true };
-        case '^': return { '6', true };
-        case '&': return { '7', true };
-        case '*': return { '8', true };
-        case '(': return { '9', true };
-        case ')': return { '0', true };
-
-        // Punctuation (unshifted)
-        case '`': return { VK_OEM_3, false };
-        case '-': return { VK_OEM_MINUS, false };
-        case '=': return { VK_OEM_PLUS, false };
-        case '[': return { VK_OEM_4, false };
-        case ']': return { VK_OEM_6, false };
-        case '\\': return { VK_OEM_5, false };
-        case ';': return { VK_OEM_1, false };
-        case '\'': return { VK_OEM_7, false };
-        case ',': return { VK_OEM_COMMA, false };
-        case '.': return { VK_OEM_PERIOD, false };
-        case '/': return { VK_OEM_2, false };
-        
-        // Punctuation (shifted)
-        case '~': return { VK_OEM_3, true };
-        case '_': return { VK_OEM_MINUS, true };
-        case '+': return { VK_OEM_PLUS, true };
-        case '{': return { VK_OEM_4, true };
-        case '}': return { VK_OEM_6, true };
-        case '|': return { VK_OEM_5, true };
-        case ':': return { VK_OEM_1, true };
-        case '"': return { VK_OEM_7, true };
-        case '<': return { VK_OEM_COMMA, true };
-        case '>': return { VK_OEM_PERIOD, true };
-        case '?': return { VK_OEM_2, true };
-
-        default:
-            // This character cannot be typed with our current mapping.
-            // Returning a vk_code of 0 signals failure.
-            return { 0, false };
-    }
+    // Windows: direction filtering is handled by WinDivert filter in network_manager.cpp
 }
 
-KeyAction CharToKeyAction_Global(char c) {
-    // Use VkKeyScanA to get the virtual key code and shift state for this character
-    SHORT vk_scan = VkKeyScanA(c);
-    
-    if (vk_scan != -1) {
-        // Extract virtual key code (low byte) and shift state (high byte)
-        WORD vk_code = LOBYTE(vk_scan);
-        bool needs_shift = (HIBYTE(vk_scan) & 1) != 0; // Shift flag is bit 0
-        
-        // Get the scan code for this virtual key
-        WORD scan_code = (WORD)MapVirtualKeyA(vk_code, MAPVK_VK_TO_VSC);
-        
-        // Handle extended keys (keys that need the extended flag)
-        switch (vk_code) {
-            case VK_INSERT:
-            case VK_DELETE:
-            case VK_HOME:
-            case VK_END:
-            case VK_PRIOR: // PAGE UP
-            case VK_NEXT:  // PAGE DOWN
-            case VK_LEFT:
-            case VK_RIGHT:
-            case VK_UP:
-            case VK_DOWN:
-            case VK_NUMLOCK:
-            case VK_RCONTROL:
-            case VK_RMENU: // Right Alt
-            case VK_DIVIDE: // Numpad divide
-                scan_code |= 0xE000; // Extended key flag
-                break;
-        }
-        
-        return { vk_code, scan_code, needs_shift };
+void SetLagswitchDelay(int delay_ms) {
+    if (g_isLinuxWine) {
+        Command cmd = {};
+        cmd.type.store(CMD_LAGSWITCH_SET_DELAY, std::memory_order_relaxed);
+        cmd.value.store(delay_ms, std::memory_order_relaxed);
+        EnqueueCommand(cmd);
     }
-    
-    // Fallback for common characters that VkKeyScanA might miss
-    // Lowercase letters
-    if (c >= 'a' && c <= 'z') {
-        WORD vk_code = (WORD)(toupper(c));
-        WORD scan_code = (WORD)MapVirtualKeyA(vk_code, MAPVK_VK_TO_VSC);
-        return { vk_code, scan_code, false };
-    }
-    // Uppercase letters
-    if (c >= 'A' && c <= 'Z') {
-        WORD vk_code = (WORD)c;
-        WORD scan_code = (WORD)MapVirtualKeyA(vk_code, MAPVK_VK_TO_VSC);
-        return { vk_code, scan_code, true };
-    }
-    // Numbers
-    if (c >= '0' && c <= '9') {
-        WORD vk_code = (WORD)c;
-        WORD scan_code = (WORD)MapVirtualKeyA(vk_code, MAPVK_VK_TO_VSC);
-        return { vk_code, scan_code, false };
-    }
-    
-    // Fallback for common symbols using VK_OEM_* codes with scan codes
-    switch (c) {
-        case ' ': 
-            return { VK_SPACE, (WORD)MapVirtualKeyA(VK_SPACE, MAPVK_VK_TO_VSC), false };
-        case '\n': 
-            return { VK_RETURN, (WORD)MapVirtualKeyA(VK_RETURN, MAPVK_VK_TO_VSC), false };
-        case '\t': 
-            return { VK_TAB, (WORD)MapVirtualKeyA(VK_TAB, MAPVK_VK_TO_VSC), false };
-            
-        // Number row symbols (require shift)
-        case '!': return { '1', (WORD)MapVirtualKeyA('1', MAPVK_VK_TO_VSC), true };
-        case '@': return { '2', (WORD)MapVirtualKeyA('2', MAPVK_VK_TO_VSC), true };
-        case '#': return { '3', (WORD)MapVirtualKeyA('3', MAPVK_VK_TO_VSC), true };
-        case '$': return { '4', (WORD)MapVirtualKeyA('4', MAPVK_VK_TO_VSC), true };
-        case '%': return { '5', (WORD)MapVirtualKeyA('5', MAPVK_VK_TO_VSC), true };
-        case '^': return { '6', (WORD)MapVirtualKeyA('6', MAPVK_VK_TO_VSC), true };
-        case '&': return { '7', (WORD)MapVirtualKeyA('7', MAPVK_VK_TO_VSC), true };
-        case '*': return { '8', (WORD)MapVirtualKeyA('8', MAPVK_VK_TO_VSC), true };
-        case '(': return { '9', (WORD)MapVirtualKeyA('9', MAPVK_VK_TO_VSC), true };
-        case ')': return { '0', (WORD)MapVirtualKeyA('0', MAPVK_VK_TO_VSC), true };
+    // Windows: delay is handled by the delay queue in network_manager.cpp
+}
 
-        // Punctuation (unshifted)
-        case '`': return { VK_OEM_3, (WORD)MapVirtualKeyA(VK_OEM_3, MAPVK_VK_TO_VSC), false };
-        case '-': return { VK_OEM_MINUS, (WORD)MapVirtualKeyA(VK_OEM_MINUS, MAPVK_VK_TO_VSC), false };
-        case '=': return { VK_OEM_PLUS, (WORD)MapVirtualKeyA(VK_OEM_PLUS, MAPVK_VK_TO_VSC), false };
-        case '[': return { VK_OEM_4, (WORD)MapVirtualKeyA(VK_OEM_4, MAPVK_VK_TO_VSC), false };
-        case ']': return { VK_OEM_6, (WORD)MapVirtualKeyA(VK_OEM_6, MAPVK_VK_TO_VSC), false };
-        case '\\': return { VK_OEM_5, (WORD)MapVirtualKeyA(VK_OEM_5, MAPVK_VK_TO_VSC), false };
-        case ';': return { VK_OEM_1, (WORD)MapVirtualKeyA(VK_OEM_1, MAPVK_VK_TO_VSC), false };
-        case '\'': return { VK_OEM_7, (WORD)MapVirtualKeyA(VK_OEM_7, MAPVK_VK_TO_VSC), false };
-        case ',': return { VK_OEM_COMMA, (WORD)MapVirtualKeyA(VK_OEM_COMMA, MAPVK_VK_TO_VSC), false };
-        case '.': return { VK_OEM_PERIOD, (WORD)MapVirtualKeyA(VK_OEM_PERIOD, MAPVK_VK_TO_VSC), false };
-        case '/': return { VK_OEM_2, (WORD)MapVirtualKeyA(VK_OEM_2, MAPVK_VK_TO_VSC), false };
-        
-        // Punctuation (shifted)
-        case '~': return { VK_OEM_3, (WORD)MapVirtualKeyA(VK_OEM_3, MAPVK_VK_TO_VSC), true };
-        case '_': return { VK_OEM_MINUS, (WORD)MapVirtualKeyA(VK_OEM_MINUS, MAPVK_VK_TO_VSC), true };
-        case '+': return { VK_OEM_PLUS, (WORD)MapVirtualKeyA(VK_OEM_PLUS, MAPVK_VK_TO_VSC), true };
-        case '{': return { VK_OEM_4, (WORD)MapVirtualKeyA(VK_OEM_4, MAPVK_VK_TO_VSC), true };
-        case '}': return { VK_OEM_6, (WORD)MapVirtualKeyA(VK_OEM_6, MAPVK_VK_TO_VSC), true };
-        case '|': return { VK_OEM_5, (WORD)MapVirtualKeyA(VK_OEM_5, MAPVK_VK_TO_VSC), true };
-        case ':': return { VK_OEM_1, (WORD)MapVirtualKeyA(VK_OEM_1, MAPVK_VK_TO_VSC), true };
-        case '"': return { VK_OEM_7, (WORD)MapVirtualKeyA(VK_OEM_7, MAPVK_VK_TO_VSC), true };
-        case '<': return { VK_OEM_COMMA, (WORD)MapVirtualKeyA(VK_OEM_COMMA, MAPVK_VK_TO_VSC), true };
-        case '>': return { VK_OEM_PERIOD, (WORD)MapVirtualKeyA(VK_OEM_PERIOD, MAPVK_VK_TO_VSC), true };
-        case '?': return { VK_OEM_2, (WORD)MapVirtualKeyA(VK_OEM_2, MAPVK_VK_TO_VSC), true };
-
-        default:
-            // This character cannot be typed with our current mapping
-            return { 0, 0, false };
+void SetLagswitchMode(int mode) {
+    if (g_isLinuxWine) {
+        Command cmd = {};
+        cmd.type.store(CMD_LAGSWITCH_SET_MODE, std::memory_order_relaxed);
+        cmd.value.store(mode, std::memory_order_relaxed);
+        EnqueueCommand(cmd);
     }
+    // Windows: mode (block vs delay) is handled by WinDivert logic in network_manager.cpp
 }
