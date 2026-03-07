@@ -795,3 +795,61 @@ void SetLagswitchMode(int mode) {
     }
     // Windows: mode (block vs delay) is handled by WinDivert logic in network_manager.cpp
 }
+
+// Implementations added to resolve previously missing externals.
+
+// Find process IDs by executable name (case-insensitive substring match).
+std::vector<unsigned long> FindProcessIdsByName_Compat(const std::string& name, bool takeAll) {
+    std::vector<unsigned long> result;
+    if (name.empty()) return result;
+
+    std::string target = name;
+    std::transform(target.begin(), target.end(), target.begin(), ::tolower);
+
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return result;
+
+    PROCESSENTRY32 pe;
+    pe.dwSize = sizeof(pe);
+    if (Process32First(snap, &pe)) {
+        do {
+            std::string exeName = pe.szExeFile ? pe.szExeFile : "";
+            std::string exeLower = exeName;
+            std::transform(exeLower.begin(), exeLower.end(), exeLower.begin(), ::tolower);
+
+            if (exeLower == target || exeLower.find(target) != std::string::npos) {
+                result.push_back(static_cast<unsigned long>(pe.th32ProcessID));
+                if (!takeAll) break;
+            }
+        } while (Process32Next(snap, &pe));
+    }
+
+    CloseHandle(snap);
+    return result;
+}
+
+// Open processes for a list of PIDs and return their handles as void* (caller must CloseHandle on returned handles).
+std::vector<void*> GetProcessHandles_Compat(const std::vector<unsigned long>& pids, unsigned long desiredAccess) {
+    std::vector<void*> handles;
+    for (unsigned long pid : pids) {
+        if (pid == 0) continue;
+        HANDLE hProc = OpenProcess(desiredAccess, FALSE, pid);
+        if (hProc) {
+            handles.push_back(reinterpret_cast<void*>(hProc));
+        }
+    }
+    return handles;
+}
+
+// Minimal safe KeyAction fallbacks so PasteText / char->key mapping can link.
+// Returns a zero-initialized KeyAction. Replace with full mapping logic as needed.
+KeyAction CharToKeyAction_Global(char c) {
+    (void)c;
+    KeyAction ka{};
+    return ka;
+}
+
+KeyAction CharToKeyAction_Compat(char c) {
+    // For compatibility, forward to global mapping for now.
+    return CharToKeyAction_Global(c);
+}
