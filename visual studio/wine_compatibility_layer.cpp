@@ -645,31 +645,41 @@ bool Linux_ExecuteSpecialAction(SpecialAction& action_data, int timeout_ms = 100
     }
     
     // Place the command in the mailbox
+    // Copy process_name (if set)
     strcpy_s(g_sharedData->special_action.process_name, sizeof(g_sharedData->special_action.process_name), action_data.process_name);
-    g_sharedData->special_action.command.store(action_data.command.load(), std::memory_order_relaxed);
+    // Copy numeric argument(s) into the field the helper expects (response_pid_count is used for numeric inputs like delay/item)
+    g_sharedData->special_action.response_pid_count.store(action_data.response_pid_count.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    // Copy command enum
+    g_sharedData->special_action.command.store(action_data.command.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    // Ensure success flag is cleared by requester
+    g_sharedData->special_action.response_success.store(false, std::memory_order_relaxed);
+
+    // Publish the request
     g_sharedData->special_action.request_ready.store(true, std::memory_order_release);
     
     // Wait for the response
     auto start_response = std::chrono::steady_clock::now();
     while (!g_sharedData->special_action.response_ready.load(std::memory_order_acquire)) {
         if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_response).count() > timeout_ms) {
-            g_sharedData->special_action.request_ready.store(false);
+            // timeout: clear request flag and return false
+            g_sharedData->special_action.request_ready.store(false, std::memory_order_relaxed);
             return false;
         }
         Sleep(1);
     }
     
     // Retrieve the response
-    bool success = g_sharedData->special_action.response_success.load();
+    bool success = g_sharedData->special_action.response_success.load(std::memory_order_relaxed);
     if (success) {
         // Copy the PID count and the array of PIDs back into our local action_data struct.
-        int count = g_sharedData->special_action.response_pid_count.load();
-        action_data.response_pid_count.store(count);
+        int count = g_sharedData->special_action.response_pid_count.load(std::memory_order_relaxed);
+        action_data.response_pid_count.store(count, std::memory_order_relaxed);
         for (int i = 0; i < count; ++i) {
             action_data.response_pids[i] = g_sharedData->special_action.response_pids[i];
         }
     }
     
+    // Clear the helper's response ready flag so the mailbox is free for the next request
     g_sharedData->special_action.response_ready.store(false, std::memory_order_relaxed);
     return success;
 }
@@ -678,10 +688,9 @@ void SetBhopDelay(int delay_ms) {
     SpecialAction action = {};
     action.command.store(SA_SET_BHOP_DELAY);
     action.response_success.store(false);
-    action.response_pid_count.store(0);
+    // Place numeric value into response_pid_count (helper reads delay from this field)
+    action.response_pid_count.store(delay_ms);
     strcpy_s(action.process_name, sizeof(action.process_name), ""); // No process name needed
-
-    snprintf(action.process_name, sizeof(action.process_name), "%d", delay_ms);
 
     Linux_ExecuteSpecialAction(action);
 }
@@ -690,10 +699,9 @@ void SetDesyncItem(int itemSlot) {
     SpecialAction action = {};
     action.command.store(SA_SET_DESYNC_ITEM);
     action.response_success.store(false);
-    action.response_pid_count.store(0);
+    // Place numeric value into response_pid_count (helper reads item slot from this field)
+    action.response_pid_count.store(itemSlot);
     strcpy_s(action.process_name, sizeof(action.process_name), ""); // No process name needed
-
-    snprintf(action.process_name, sizeof(action.process_name), "%d", itemSlot);
 
     Linux_ExecuteSpecialAction(action);
 }

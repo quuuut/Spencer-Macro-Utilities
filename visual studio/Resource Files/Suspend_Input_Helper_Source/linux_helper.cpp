@@ -28,6 +28,9 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <atomic>
+#include <mutex>
+#include <cctype>
+#include <arpa/inet.h>
 
 #include "shared_mem.h"
 #include "keymapping.h"
@@ -41,6 +44,17 @@ std::atomic_bool isdesync{false};
 
 std::atomic_int bhop_delay{10};
 std::atomic_int desync_itemslot{5};
+
+// Lagswitch state (shared-memory driven)
+static std::mutex g_lagswitch_mutex;
+static bool g_lagswitch_enabled = false;
+static bool g_lagswitch_inbound = true;
+static bool g_lagswitch_outbound = true;
+static int  g_lagswitch_delay_ms = 0; // used in delay mode
+static int  g_lagswitch_mode = 0;     // 0 = block, 1 = delay
+static std::vector<std::string> g_lagswitch_ips;
+static std::string g_lagswitch_iface;
+
 // --- Function Prototypes ---
 void cleanup(int);
 bool interactive_device_detection(std::string& out_keyboard_path, std::string& out_mouse_path);
@@ -288,13 +302,125 @@ void fastkey_thread() {
     }
 }
 
-void lagswitch_toggle(bool state, std::string nadapter) {
-    (void)nadapter;
-    if (state) {
-        printf("[Helper] Lag switch enabled (no-op in this implementation)\n");
-    } else {
-        printf("[Helper] Lag switch disabled (no-op in this implementation)\n");
+static bool is_valid_ipv4(const std::string& ip) {
+    struct in_addr addr {};
+    return inet_pton(AF_INET, ip.c_str(), &addr) == 1;
+}
+
+static bool is_safe_iface_name(const std::string& s) {
+    if (s.empty()) return false;
+    for (char c : s) {
+        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.')) {
+            return false;
+        }
     }
+    return true;
+}
+
+static std::string detect_default_iface() {
+    FILE* fp = popen("ip -4 route show default 2>/dev/null | awk '{print $5}' | head -n1", "r");
+    if (!fp) return "";
+    char buf[128] = {0};
+    std::string iface;
+    if (fgets(buf, sizeof(buf), fp)) {
+        iface = buf;
+        while (!iface.empty() && (iface.back() == '\n' || iface.back() == '\r' || iface.back() == ' ' || iface.back() == '\t')) {
+            iface.pop_back();
+        }
+    }
+    pclose(fp);
+    return is_safe_iface_name(iface) ? iface : "";
+}
+
+static int run_cmd(const std::string& cmd) {
+    return std::system(cmd.c_str());
+}
+
+static void tc_clear_rules_locked(const std::string& iface) {
+    (void)run_cmd("tc qdisc del dev " + iface + " clsact 2>/dev/null");
+    (void)run_cmd("tc qdisc del dev " + iface + " root 2>/dev/null");
+}
+
+static void apply_lagswitch_tc_locked() {
+    if (g_lagswitch_iface.empty()) {
+        g_lagswitch_iface = detect_default_iface();
+    }
+    if (!is_safe_iface_name(g_lagswitch_iface)) {
+        printf("[Helper] Lagswitch: no valid network interface found.\n");
+        return;
+    }
+
+    const std::string iface = g_lagswitch_iface;
+    tc_clear_rules_locked(iface);
+
+    if (!g_lagswitch_enabled || g_lagswitch_ips.empty()) {
+        printf("[Helper] Lagswitch: disabled or empty IP list, tc rules cleared.\n");
+        return;
+    }
+
+    int prio = 10;
+
+    if (g_lagswitch_mode == 0) {
+        // BLOCK mode: use clsact + drop filters
+        (void)run_cmd("tc qdisc add dev " + iface + " clsact 2>/dev/null");
+
+        for (const auto& ip : g_lagswitch_ips) {
+            if (g_lagswitch_outbound) {
+                (void)run_cmd(
+                    "tc filter add dev " + iface +
+                    " egress protocol ip prio " + std::to_string(prio++) +
+                    " u32 match ip dst " + ip + "/32 action drop 2>/dev/null");
+            }
+            if (g_lagswitch_inbound) {
+                (void)run_cmd(
+                    "tc filter add dev " + iface +
+                    " ingress protocol ip prio " + std::to_string(prio++) +
+                    " u32 match ip src " + ip + "/32 action drop 2>/dev/null");
+            }
+        }
+
+        printf("[Helper] Lagswitch BLOCK applied on %s for %zu IP(s).\n", iface.c_str(), g_lagswitch_ips.size());
+        return;
+    }
+
+    // DELAY mode (tc netem): egress delay by destination IP.
+    int delay = g_lagswitch_delay_ms;
+    if (delay < 1) delay = 1;
+
+    (void)run_cmd("tc qdisc add dev " + iface + " root handle 1: prio bands 3 2>/dev/null");
+    (void)run_cmd("tc qdisc add dev " + iface + " parent 1:3 handle 30: netem delay " + std::to_string(delay) + "ms 2>/dev/null");
+
+    for (const auto& ip : g_lagswitch_ips) {
+        if (g_lagswitch_outbound) {
+            (void)run_cmd(
+                "tc filter add dev " + iface +
+                " protocol ip parent 1: prio " + std::to_string(prio++) +
+                " u32 match ip dst " + ip + "/32 flowid 1:3 2>/dev/null");
+        }
+    }
+
+    // Optional inbound fallback in DELAY mode: drop (tc ingress delay per-IP is not trivial without IFB).
+    if (g_lagswitch_inbound) {
+        (void)run_cmd("tc qdisc add dev " + iface + " clsact 2>/dev/null");
+        for (const auto& ip : g_lagswitch_ips) {
+            (void)run_cmd(
+                "tc filter add dev " + iface +
+                " ingress protocol ip prio " + std::to_string(prio++) +
+                " u32 match ip src " + ip + "/32 action drop 2>/dev/null");
+        }
+        printf("[Helper] Lagswitch DELAY: inbound requested, using drop fallback for inbound.\n");
+    }
+
+    printf("[Helper] Lagswitch DELAY applied on %s (%dms) for %zu IP(s).\n", iface.c_str(), delay, g_lagswitch_ips.size());
+}
+
+void lagswitch_toggle(bool state, std::string nadapter) {
+    std::lock_guard<std::mutex> lock(g_lagswitch_mutex);
+    g_lagswitch_enabled = state;
+    if (!nadapter.empty() && is_safe_iface_name(nadapter)) {
+        g_lagswitch_iface = nadapter;
+    }
+    apply_lagswitch_tc_locked();
 }
 
 void command_processor_thread() {
@@ -349,11 +475,34 @@ void command_processor_thread() {
                 printf("[Helper] Received CMD_DESYNC_DISABLE\n");
                 isdesync.store(false, std::memory_order_release);
             } else if (type == CMD_LAGSWITCH_ENABLE) {
-                // Not implemented in this helper, but you could set a flag here if needed
-                printf("[Helper] Received CMD_LAGSWITCH_ENABLE (no-op in this implementation)\n");
+                printf("[Helper] Received CMD_LAGSWITCH_ENABLE\n");
+                std::lock_guard<std::mutex> lock(g_lagswitch_mutex);
+                g_lagswitch_enabled = true;
+                apply_lagswitch_tc_locked();
             } else if (type == CMD_LAGSWITCH_DISABLE) {
-                // Not implemented in this helper, but you could clear a flag here if needed
-                printf("[Helper] Received CMD_LAGSWITCH_DISABLE (no-op in this implementation)\n");
+                printf("[Helper] Received CMD_LAGSWITCH_DISABLE\n");
+                std::lock_guard<std::mutex> lock(g_lagswitch_mutex);
+                g_lagswitch_enabled = false;
+                apply_lagswitch_tc_locked();
+            } else if (type == CMD_LAGSWITCH_SET_DIRECTION) {
+                const int dir = cmd.value.load(std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(g_lagswitch_mutex);
+                g_lagswitch_inbound = (dir & 1) != 0;
+                g_lagswitch_outbound = (dir & 2) != 0;
+                printf("[Helper] Lagswitch direction: inbound=%d outbound=%d\n", g_lagswitch_inbound, g_lagswitch_outbound);
+                apply_lagswitch_tc_locked();
+            } else if (type == CMD_LAGSWITCH_SET_DELAY) {
+                const int delay = cmd.value.load(std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(g_lagswitch_mutex);
+                g_lagswitch_delay_ms = (delay < 0) ? 0 : delay;
+                printf("[Helper] Lagswitch delay: %d ms\n", g_lagswitch_delay_ms);
+                apply_lagswitch_tc_locked();
+            } else if (type == CMD_LAGSWITCH_SET_MODE) {
+                const int mode = cmd.value.load(std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(g_lagswitch_mutex);
+                g_lagswitch_mode = (mode == 1) ? 1 : 0;
+                printf("[Helper] Lagswitch mode: %d\n", g_lagswitch_mode);
+                apply_lagswitch_tc_locked();
             }
 
             shared_data->read_index.store((read_idx + 1) & (COMMAND_BUFFER_SIZE - 1), std::memory_order_release);
@@ -404,6 +553,32 @@ void special_action_thread() {
                     success = true;
                     printf("[Helper] Desync item slot set to %d\n", desync_itemslot.load(std::memory_order_acquire));
                 }
+            } else if (cmd == SA_SET_LAGSWITCH_IPS) {
+                std::vector<std::string> parsed_ips;
+                std::stringstream ss(name);
+                std::string token;
+
+                while (std::getline(ss, token, ',')) {
+                    token.erase(std::remove_if(token.begin(), token.end(),
+                        [](unsigned char c) { return std::isspace(c) != 0; }), token.end());
+                    if (!token.empty() && is_valid_ipv4(token)) {
+                        parsed_ips.push_back(token);
+                    }
+                }
+
+                // de-dup
+                std::sort(parsed_ips.begin(), parsed_ips.end());
+                parsed_ips.erase(std::unique(parsed_ips.begin(), parsed_ips.end()), parsed_ips.end());
+
+                {
+                    std::lock_guard<std::mutex> lock(g_lagswitch_mutex);
+                    g_lagswitch_ips = parsed_ips;
+                    apply_lagswitch_tc_locked();
+                }
+
+                pid_count = static_cast<int>(parsed_ips.size());
+                success = true;
+                printf("[Helper] Lagswitch IP list updated: %d IP(s)\n", pid_count);
             }
             
             shared_data->special_action.response_pid_count.store(pid_count, std::memory_order_relaxed);
