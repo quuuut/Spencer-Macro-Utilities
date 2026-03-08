@@ -659,21 +659,40 @@ std::vector<pid_t> find_all_processes_by_exes_or_pids(const std::string& input) 
         pid_t pid = atoi(entry->d_name);
         if (pid <= 0) continue;
 
+        bool matched = false;
+
+        // First try matching by executable path
         std::string exe_path = "/proc/" + std::string(entry->d_name) + "/exe";
         char link_target[4096] = {0};
         ssize_t len = readlink(exe_path.c_str(), link_target, sizeof(link_target) - 1);
-        if (len == -1) continue; // cannot read (permission or gone)
-        link_target[len] = '\0';
-        std::string target_path(link_target);
-
-        bool matched = false;
-        for (const auto& exe : exe_names) {
-            if (target_path.size() >= exe.size() &&
-                target_path.compare(target_path.size() - exe.size(), exe.size(), exe) == 0) {
-                matched = true;
-                pids.push_back(pid);
+        if (len != -1) {
+            link_target[len] = '\0';
+            std::string target_path(link_target);
+            for (const auto& exe : exe_names) {
+                if (target_path.size() >= exe.size() &&
+                    target_path.compare(target_path.size() - exe.size(), exe.size(), exe) == 0) {
+                    matched = true;
+                    pids.push_back(pid);
+                    break;
+                }
             }
-            if (matched) break;
+        }
+
+        // If not matched, try cmdline (for Wine processes)
+        if (!matched) {
+            std::string cmdline_path = "/proc/" + std::string(entry->d_name) + "/cmdline";
+            std::ifstream cmdline_file(cmdline_path);
+            if (cmdline_file) {
+                std::string cmdline;
+                std::getline(cmdline_file, cmdline, '\0');
+                for (const auto& exe : exe_names) {
+                    if (cmdline.find(exe) != std::string::npos) {
+                        matched = true;
+                        pids.push_back(pid);
+                        break;
+                    }
+                }
+            }
         }
     }
 
