@@ -491,7 +491,7 @@ void SetDesyncState(bool enable) {
     EnqueueCommand(cmd);
 }
 
-void HoldKeyBinded(WORD Vk_key) {
+void HoldKeyBinded(unsigned int Vk_key) {
     if (g_isLinuxWine) {
         // Scroll wheel handling
         if (Vk_key == VK_MOUSE_WHEEL_UP) {
@@ -538,7 +538,7 @@ void HoldKeyBinded(WORD Vk_key) {
     }
 }
 
-void ReleaseKeyBinded(WORD Vk_key) {
+void ReleaseKeyBinded(unsigned int Vk_key) {
     if (g_isLinuxWine) {
         Command cmd = {};
         cmd.type.store(CMD_KEY_ACTION, std::memory_order_relaxed);
