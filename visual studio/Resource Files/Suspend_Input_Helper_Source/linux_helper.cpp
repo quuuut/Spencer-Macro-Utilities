@@ -250,6 +250,16 @@ int main(int argc, char* argv[]) {
 
 void cleanup(int signum) {
     std::cout << "\nCleaning up..." << std::endl;
+    
+    // Clean up network traffic control rules
+    {
+        std::lock_guard<std::mutex> lock(g_lagswitch_mutex);
+        if (!g_lagswitch_iface.empty() && is_safe_iface_name(g_lagswitch_iface)) {
+            std::cout << "[Helper] Removing network traffic control rules from " << g_lagswitch_iface << std::endl;
+            tc_clear_rules_locked(g_lagswitch_iface);
+        }
+    }
+    
     if (uinput_fd >= 0) {
         ioctl(uinput_fd, UI_DEV_DESTROY);
         close(uinput_fd);
