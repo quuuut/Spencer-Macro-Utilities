@@ -3431,13 +3431,13 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
 				if (islagswitchswitch) {
 					// TOGGLE MODE
 					if (isPressed && !wasLagSwitchPressed) {
-						g_windivert_blocking = !g_windivert_blocking; // Flip state
+						SetLagswitchEnabled(!g_windivert_blocking.load()); // Flip state via compat layer
 					}
                     logical_on_state = g_windivert_blocking;
 					wasLagSwitchPressed = isPressed;
 				} else {
 					// HOLD MODE
-					g_windivert_blocking = isPressed;
+					SetLagswitchEnabled(isPressed);
                     logical_on_state = isPressed;
 				}
 
@@ -3451,15 +3451,15 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
                 if (logical_on_state && lagswitch_autounblock) {
                     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - lagswitch_start_time).count();
                     
-                    if (elapsed >= (lagswitch_max_duration * 1000)) {
-                        // 1. Unblock momentarily (Let traffic pass)
-                        g_windivert_blocking = false;
+					if (elapsed >= (lagswitch_max_duration * 1000)) {
+						// 1. Unblock momentarily (Let traffic pass) - via compat layer
+						SetLagswitchEnabled(false);
                         
-                        // 2. Wait
-                        std::this_thread::sleep_for(std::chrono::milliseconds(lagswitch_unblock_ms));
+						// 2. Wait
+						std::this_thread::sleep_for(std::chrono::milliseconds(lagswitch_unblock_ms));
                         
-                        // 3. Determine if we should Re-Lag
-                        bool should_resume = false;
+						// 3. Determine if we should Re-Lag
+						bool should_resume = false;
 
                         if (islagswitchswitch) {
                             // In Toggle Mode, if we were logically on, we STAY on.
@@ -3471,9 +3471,9 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
                             }
                         }
 
-                        if (should_resume) {
-                            g_windivert_blocking = true;
-                        }
+						if (should_resume) {
+							SetLagswitchEnabled(true);
+						}
                         
                         // 4. Reset timer
                         lagswitch_start_time = std::chrono::steady_clock::now();
@@ -3490,7 +3490,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
 							WinDivertThread = std::thread(WindivertWorkerThread);
 							// Allow 200ms for the driver to load before toggling on
 							std::this_thread::sleep_for(std::chrono::milliseconds(200));
-							g_windivert_blocking = true;
+							SetLagswitchEnabled(true);
 						} else {
 							std::cerr << "Failed to load WinDivert files." << std::endl;
 						}
@@ -3501,12 +3501,12 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
 					}
 				}
 			}
-        } else {
-            // Safety: If module is disabled or tabbed out, ensure we aren't blocking internet
-            if (!section_toggles[15]) {
-                g_windivert_blocking = false;
-            }
-        }
+		} else {
+			// Safety: If module is disabled or tabbed out, ensure we aren't blocking internet
+			if (!section_toggles[15]) {
+				SetLagswitchEnabled(false);
+			}
+		}
 
 		// Every second, check if roblox continues to exist.
 		if (++counter % 100 == 0) {  // Check time every 100th iteration

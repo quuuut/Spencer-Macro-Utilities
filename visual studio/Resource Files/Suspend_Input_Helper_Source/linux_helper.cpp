@@ -850,16 +850,19 @@ void evdev_reader_thread(const std::string& device_path) {
                 }
             }
             emit_uinput(EV_KEY, ev.code, ev.value);
-            emit_uinput(EV_SYN, SYN_REPORT, 0);
         }
-        
         else if (ev.type == EV_REL) {
             emit_uinput(EV_REL, ev.code, ev.value);
-            emit_uinput(EV_SYN, SYN_REPORT, 0);
         }
-        
         else if (ev.type == EV_ABS) {
             emit_uinput(EV_ABS, ev.code, ev.value);
+        }
+        else if (ev.type == EV_SYN) {
+            emit_uinput(EV_SYN, ev.code, ev.value);
+        }
+        
+        // Always emit SYN_REPORT after processing any event to ensure synchronization
+        if (ev.type != EV_SYN) {
             emit_uinput(EV_SYN, SYN_REPORT, 0);
         }
 

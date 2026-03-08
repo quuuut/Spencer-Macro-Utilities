@@ -10,6 +10,8 @@
 #include "Resource Files/globals.h"
 using namespace Globals;
 
+#include "Resource Files/network_manager.h"
+
 std::string g_linuxHelperPath_Windows;
 
 // Function Pointers
@@ -649,6 +651,85 @@ void SetDesyncItem(int itemSlot) {
     snprintf(action.process_name, sizeof(action.process_name), "%d", itemSlot);
 
     Linux_ExecuteSpecialAction(action);
+}
+
+// --- Lagswitch compatibility API ---
+void SetLagswitchEnabled(bool enable) {
+    if (g_isLinuxWine) {
+        Command cmd = {};
+        cmd.type.store(enable ? CMD_LAGSWITCH_ENABLE : CMD_LAGSWITCH_DISABLE, std::memory_order_relaxed);
+        EnqueueCommand(cmd);
+        g_windivert_blocking.store(enable);
+    } else {
+        g_windivert_blocking.store(enable);
+        if (g_windivert_running.load()) {
+            SafeCloseWinDivert();
+        }
+    }
+}
+
+void SetLagswitchDirection(bool inbound, bool outbound) {
+    if (g_isLinuxWine) {
+        Command cmd = {};
+        cmd.type.store(CMD_LAGSWITCH_SET_DIRECTION, std::memory_order_relaxed);
+        int dir = (inbound ? 1 : 0) | (outbound ? 2 : 0);
+        cmd.value.store(dir, std::memory_order_relaxed);
+        EnqueueCommand(cmd);
+        lagswitchinbound = inbound;
+        lagswitchoutbound = outbound;
+    } else {
+        lagswitchinbound = inbound;
+        lagswitchoutbound = outbound;
+        if (g_windivert_running.load()) SafeCloseWinDivert();
+    }
+}
+
+void SetLagswitchDelay(int delay_ms) {
+    if (g_isLinuxWine) {
+        Command cmd = {};
+        cmd.type.store(CMD_LAGSWITCH_SET_DELAY, std::memory_order_relaxed);
+        cmd.value.store(delay_ms, std::memory_order_relaxed);
+        EnqueueCommand(cmd);
+        lagswitchlagdelay = delay_ms;
+    } else {
+        lagswitchlagdelay = delay_ms;
+        if (g_windivert_running.load()) SafeCloseWinDivert();
+    }
+}
+
+void SetLagswitchMode(int mode) {
+    if (g_isLinuxWine) {
+        Command cmd = {};
+        cmd.type.store(CMD_LAGSWITCH_SET_MODE, std::memory_order_relaxed);
+        cmd.value.store(mode, std::memory_order_relaxed);
+        EnqueueCommand(cmd);
+    } else {
+        // Windows handles blocking vs delay primarily in network_manager; forcing a filter refresh
+        if (g_windivert_running.load()) SafeCloseWinDivert();
+    }
+}
+
+void SetLagswitchIPs(const std::vector<std::string>& ips) {
+    if (g_isLinuxWine) {
+        // Pack into a SpecialAction (process_name buffer) as comma separated list
+        SpecialAction action = {};
+        action.command.store(SA_SET_LAGSWITCH_IPS);
+        action.response_success.store(false);
+        action.response_pid_count.store(0);
+        std::string combined;
+        for (size_t i = 0; i < ips.size(); ++i) {
+            if (i) combined += ",";
+            combined += ips[i];
+        }
+        strncpy_s(action.process_name, sizeof(action.process_name), combined.c_str(), sizeof(action.process_name)-1);
+        Linux_ExecuteSpecialAction(action);
+    } else {
+        std::unique_lock<std::shared_mutex> lock(g_ip_mutex);
+        g_roblox_dynamic_ips.clear();
+        for (const auto &ip : ips) g_roblox_dynamic_ips.insert(ip);
+        g_ip_list_updated.store(true);
+        if (g_windivert_running.load()) SafeCloseWinDivert();
+    }
 }
 
 
