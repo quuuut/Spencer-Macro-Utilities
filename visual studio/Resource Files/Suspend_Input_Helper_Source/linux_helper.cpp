@@ -353,9 +353,14 @@ static void apply_lagswitch_tc_locked() {
     const std::string iface = g_lagswitch_iface;
     tc_clear_rules_locked(iface);
 
-    if (!g_lagswitch_enabled || g_lagswitch_ips.empty()) {
-        printf("[Helper] Lagswitch: disabled or empty IP list, tc rules cleared.\n");
+    if (!g_lagswitch_enabled) {
+        printf("[Helper] Lagswitch disabled, ignoring\n");
         return;
+    }
+
+    const bool apply_to_all = g_lagswitch_ips.empty();
+    if (apply_to_all) {
+        printf("[Helper] No IPs specified, applying to all traffic on %s\n", iface.c_str());
     }
 
     int prio = 10;
@@ -364,54 +369,91 @@ static void apply_lagswitch_tc_locked() {
         // BLOCK mode: use clsact + drop filters
         (void)run_cmd("tc qdisc add dev " + iface + " clsact 2>/dev/null");
 
-        for (const auto& ip : g_lagswitch_ips) {
+        if (apply_to_all) {
+            // Block all traffic on the interface
             if (g_lagswitch_outbound) {
                 (void)run_cmd(
                     "tc filter add dev " + iface +
-                    " egress protocol ip prio " + std::to_string(prio++) +
-                    " u32 match ip dst " + ip + "/32 action drop 2>/dev/null");
+                    " egress protocol all prio " + std::to_string(prio++) +
+                    " u32 match u32 0 0 action drop 2>/dev/null");
             }
             if (g_lagswitch_inbound) {
                 (void)run_cmd(
                     "tc filter add dev " + iface +
-                    " ingress protocol ip prio " + std::to_string(prio++) +
-                    " u32 match ip src " + ip + "/32 action drop 2>/dev/null");
+                    " ingress protocol all prio " + std::to_string(prio++) +
+                    " u32 match u32 0 0 action drop 2>/dev/null");
+            }
+        } else {
+            // Block specific IPs
+            for (const auto& ip : g_lagswitch_ips) {
+                if (g_lagswitch_outbound) {
+                    (void)run_cmd(
+                        "tc filter add dev " + iface +
+                        " egress protocol ip prio " + std::to_string(prio++) +
+                        " u32 match ip dst " + ip + "/32 action drop 2>/dev/null");
+                }
+                if (g_lagswitch_inbound) {
+                    (void)run_cmd(
+                        "tc filter add dev " + iface +
+                        " ingress protocol ip prio " + std::to_string(prio++) +
+                        " u32 match ip src " + ip + "/32 action drop 2>/dev/null");
+                }
             }
         }
 
-        printf("[Helper] Lagswitch BLOCK applied on %s for %zu IP(s).\n", iface.c_str(), g_lagswitch_ips.size());
+        printf("[Helper] Lagswitch BLOCK applied on %s for %s.\n", 
+               iface.c_str(), apply_to_all ? "ALL traffic" : (std::to_string(g_lagswitch_ips.size()) + " IP(s)").c_str());
         return;
     }
 
-    // DELAY mode (tc netem): egress delay by destination IP.
+    // DELAY mode (tc netem): egress delay
     int delay = g_lagswitch_delay_ms;
     if (delay < 1) delay = 1;
 
     (void)run_cmd("tc qdisc add dev " + iface + " root handle 1: prio bands 3 2>/dev/null");
     (void)run_cmd("tc qdisc add dev " + iface + " parent 1:3 handle 30: netem delay " + std::to_string(delay) + "ms 2>/dev/null");
 
-    for (const auto& ip : g_lagswitch_ips) {
+    if (apply_to_all) {
+        // Delay all outbound traffic
         if (g_lagswitch_outbound) {
             (void)run_cmd(
                 "tc filter add dev " + iface +
-                " protocol ip parent 1: prio " + std::to_string(prio++) +
-                " u32 match ip dst " + ip + "/32 flowid 1:3 2>/dev/null");
+                " protocol all parent 1: prio " + std::to_string(prio++) +
+                " u32 match u32 0 0 flowid 1:3 2>/dev/null");
+        }
+    } else {
+        // Delay specific IPs
+        for (const auto& ip : g_lagswitch_ips) {
+            if (g_lagswitch_outbound) {
+                (void)run_cmd(
+                    "tc filter add dev " + iface +
+                    " protocol ip parent 1: prio " + std::to_string(prio++) +
+                    " u32 match ip dst " + ip + "/32 flowid 1:3 2>/dev/null");
+            }
         }
     }
 
-    // Optional inbound fallback in DELAY mode: drop (tc ingress delay per-IP is not trivial without IFB).
+    // Inbound handling in DELAY mode
     if (g_lagswitch_inbound) {
         (void)run_cmd("tc qdisc add dev " + iface + " clsact 2>/dev/null");
-        for (const auto& ip : g_lagswitch_ips) {
+        if (apply_to_all) {
             (void)run_cmd(
                 "tc filter add dev " + iface +
-                " ingress protocol ip prio " + std::to_string(prio++) +
-                " u32 match ip src " + ip + "/32 action drop 2>/dev/null");
+                " ingress protocol all prio " + std::to_string(prio++) +
+                " u32 match u32 0 0 action drop 2>/dev/null");
+        } else {
+            for (const auto& ip : g_lagswitch_ips) {
+                (void)run_cmd(
+                    "tc filter add dev " + iface +
+                    " ingress protocol ip prio " + std::to_string(prio++) +
+                    " u32 match ip src " + ip + "/32 action drop 2>/dev/null");
+            }
         }
         printf("[Helper] Lagswitch DELAY: inbound requested, using drop fallback for inbound.\n");
     }
 
-    printf("[Helper] Lagswitch DELAY applied on %s (%dms) for %zu IP(s).\n", iface.c_str(), delay, g_lagswitch_ips.size());
+    printf("[Helper] Lagswitch DELAY applied on %s (%dms) for %s.\n", 
+           iface.c_str(), delay, apply_to_all ? "ALL traffic" : (std::to_string(g_lagswitch_ips.size()) + " IP(s)").c_str());
 }
 
 void lagswitch_toggle(bool state, std::string nadapter) {
