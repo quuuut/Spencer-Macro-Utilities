@@ -155,163 +155,7 @@ void monitor_parent_process(const std::string& parent_process_name) {
     std::cout << "[Monitor] Monitor thread exiting." << std::endl;
 }
 
-
-// ********************************************************************
-// *                  MAIN APPLICATION LOGIC                          *
-// ********************************************************************
-
-int main(int argc, char* argv[]) {
-
-    if (argc != 2) {
-        std::cout << "Usage: " << argv[0] << " <filename>" << std::endl;
-        std::cout << "Please provide exactly one filename as an argument." << std::endl;
-        return 1;
-    }
-
-    std::string filename = argv[1];
-
-    signal(SIGINT, cleanup); // Register signal handler for cleanup
-    
-
-    // === Step 1: Create the Shared Memory File IMMEDIATELY ===
-    // This allows the main application to detect that the helper has started.
-    std::cout << "[Helper] Creating shared memory file..." << std::endl;
-    int shm_fd = open(MM_FILE_PATH, O_CREAT | O_RDWR, 0600);
-    if (shm_fd == -1) {
-        perror("[Helper] CRITICAL: open failed for shared memory file");
-        return 1;
-    }
-    // Set permissions to be world-readable/writable so the Wine process can access it
-    if (fchmod(shm_fd, 0666) == -1) {
-        perror("[Helper] CRITICAL: fchmod failed on shared memory file");
-        close(shm_fd);
-        unlink(MM_FILE_PATH);
-        return 1;
-    }
-    if (ftruncate(shm_fd, sizeof(SharedMemory)) == -1) {
-        perror("[Helper] CRITICAL: ftruncate failed");
-        close(shm_fd);
-        unlink(MM_FILE_PATH);
-        return 1;
-    }
-
-    shared_data = (SharedMemory*)mmap(0, sizeof(SharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    close(shm_fd); // The file descriptor is no longer needed after mmap
-
-    if (shared_data == MAP_FAILED) {
-        perror("[Helper] CRITICAL: mmap failed");
-        unlink(MM_FILE_PATH); // Use unlink for cleanup
-        return 1;
-    }
-
-    memset(shared_data, 0, sizeof(SharedMemory));
-    std::cout << "[Helper] Memory mapped file created successfully." << std::endl;
-    
-    std::thread monitor(monitor_parent_process, filename);
-    monitor.detach();
-
-    // === Step 2: Perform Interactive Device Detection ===
-    std::cout << "[Helper] Starting interactive device detection..." << std::endl;
-    std::string keyboard_path;
-    std::string mouse_path;
-    if (!interactive_device_detection(keyboard_path, mouse_path)) {
-        std::cerr << "[Helper] Device detection failed or was cancelled. Exiting." << std::endl;
-        cleanup(0); // Clean up the created memory map file
-        return 1;
-    }
-    std::cout << "[Helper] Using Keyboard: " << keyboard_path << std::endl;
-    std::cout << "[Helper] Using Mouse:    " << mouse_path << std::endl;
-
-    // === Step 3: Setup Virtual Devices and Worker Threads ===
-    std::cout << "[Helper] Starting up core services..." << std::endl;
-    uinput_fd = setup_uinput_device();
-    if (uinput_fd < 0) {
-        cleanup(0);
-        return 1;
-    }
-    std::cout << "[Helper] Virtual input device created." << std::endl;
-    
-    std::cout << "[Helper] Launching worker threads. Press Ctrl+C to exit." << std::endl;
-    std::thread keyboard_reader(evdev_reader_thread, keyboard_path);
-    std::thread mouse_reader(evdev_reader_thread, mouse_path);
-    std::thread processor(command_processor_thread);
-    std::thread special_actions(special_action_thread);
-    std::thread fastkey(fastkey_thread);
-
-    keyboard_reader.join();
-    mouse_reader.join();
-    processor.join();
-    special_actions.join();
-    fastkey.join();
-    
-    cleanup(0);
-    return 0;
-}
-
-void cleanup(int signum) {
-    std::cout << "\nCleaning up..." << std::endl;
-    
-    // Clean up network traffic control rules
-    {
-        std::lock_guard<std::mutex> lock(g_lagswitch_mutex);
-        if (!g_lagswitch_iface.empty() && is_safe_iface_name(g_lagswitch_iface)) {
-            std::cout << "[Helper] Removing network traffic control rules from " << g_lagswitch_iface << std::endl;
-            tc_clear_rules_locked(g_lagswitch_iface);
-        }
-    }
-    
-    if (uinput_fd >= 0) {
-        ioctl(uinput_fd, UI_DEV_DESTROY);
-        close(uinput_fd);
-    }
-    if (shared_data != nullptr && shared_data != MAP_FAILED) {
-        munmap(shared_data, sizeof(SharedMemory));
-    }
-    unlink(MM_FILE_PATH);
-    exit(0);
-}
-
-
-void fastkey_thread() {
-    while (true) {
-        const bool bhop_enabled = isbhop.load(std::memory_order_acquire);
-        const bool desync_enabled = isdesync.load(std::memory_order_acquire);
-
-        if (bhop_enabled) {
-            bool space_pressed = shared_data->key_states[0x20].load(std::memory_order_acquire);
-            if (space_pressed) {
-                int delay = bhop_delay.load(std::memory_order_acquire);
-                if (delay < 1) delay = 1;
-
-                std::this_thread::sleep_for(std::chrono::milliseconds(delay / 2));
-                emit_uinput(EV_KEY, KEY_SPACE, 0);
-                emit_uinput(EV_SYN, SYN_REPORT, 0);
-
-                std::this_thread::sleep_for(std::chrono::milliseconds(delay / 2));
-                emit_uinput(EV_KEY, KEY_SPACE, 1);
-                emit_uinput(EV_SYN, SYN_REPORT, 0);
-            }
-        }
-
-        if (desync_enabled) {
-            const int slot = desync_itemslot.load(std::memory_order_acquire);
-            if (slot >= 1 && slot <= 9) {
-                const int keycode = KEY_1 + (slot - 1);
-                std::this_thread::sleep_for(std::chrono::nanoseconds(100));
-                emit_uinput(EV_KEY, keycode, 1);
-                emit_uinput(EV_SYN, SYN_REPORT, 0);
-                std::this_thread::sleep_for(std::chrono::nanoseconds(100));
-                emit_uinput(EV_KEY, keycode, 0);
-                emit_uinput(EV_SYN, SYN_REPORT, 0);
-            }
-        }
-
-        if (!bhop_enabled && !desync_enabled) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-    }
-}
-
+// Lagswitch functions
 static bool is_valid_ipv4(const std::string& ip) {
     struct in_addr addr {};
     return inet_pton(AF_INET, ip.c_str(), &addr) == 1;
@@ -473,6 +317,162 @@ void lagswitch_toggle(bool state, std::string nadapter) {
         g_lagswitch_iface = nadapter;
     }
     apply_lagswitch_tc_locked();
+}
+
+// ********************************************************************
+// *                  MAIN APPLICATION LOGIC                          *
+// ********************************************************************
+
+int main(int argc, char* argv[]) {
+
+    if (argc != 2) {
+        std::cout << "Usage: " << argv[0] << " <filename>" << std::endl;
+        std::cout << "Please provide exactly one filename as an argument." << std::endl;
+        return 1;
+    }
+
+    std::string filename = argv[1];
+
+    signal(SIGINT, cleanup); // Register signal handler for cleanup
+    
+
+    // === Step 1: Create the Shared Memory File IMMEDIATELY ===
+    // This allows the main application to detect that the helper has started.
+    std::cout << "[Helper] Creating shared memory file..." << std::endl;
+    int shm_fd = open(MM_FILE_PATH, O_CREAT | O_RDWR, 0600);
+    if (shm_fd == -1) {
+        perror("[Helper] CRITICAL: open failed for shared memory file");
+        return 1;
+    }
+    // Set permissions to be world-readable/writable so the Wine process can access it
+    if (fchmod(shm_fd, 0666) == -1) {
+        perror("[Helper] CRITICAL: fchmod failed on shared memory file");
+        close(shm_fd);
+        unlink(MM_FILE_PATH);
+        return 1;
+    }
+    if (ftruncate(shm_fd, sizeof(SharedMemory)) == -1) {
+        perror("[Helper] CRITICAL: ftruncate failed");
+        close(shm_fd);
+        unlink(MM_FILE_PATH);
+        return 1;
+    }
+
+    shared_data = (SharedMemory*)mmap(0, sizeof(SharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    close(shm_fd); // The file descriptor is no longer needed after mmap
+
+    if (shared_data == MAP_FAILED) {
+        perror("[Helper] CRITICAL: mmap failed");
+        unlink(MM_FILE_PATH); // Use unlink for cleanup
+        return 1;
+    }
+
+    memset(shared_data, 0, sizeof(SharedMemory));
+    std::cout << "[Helper] Memory mapped file created successfully." << std::endl;
+    
+    std::thread monitor(monitor_parent_process, filename);
+    monitor.detach();
+
+    // === Step 2: Perform Interactive Device Detection ===
+    std::cout << "[Helper] Starting interactive device detection..." << std::endl;
+    std::string keyboard_path;
+    std::string mouse_path;
+    if (!interactive_device_detection(keyboard_path, mouse_path)) {
+        std::cerr << "[Helper] Device detection failed or was cancelled. Exiting." << std::endl;
+        cleanup(0); // Clean up the created memory map file
+        return 1;
+    }
+    std::cout << "[Helper] Using Keyboard: " << keyboard_path << std::endl;
+    std::cout << "[Helper] Using Mouse:    " << mouse_path << std::endl;
+
+    // === Step 3: Setup Virtual Devices and Worker Threads ===
+    std::cout << "[Helper] Starting up core services..." << std::endl;
+    uinput_fd = setup_uinput_device();
+    if (uinput_fd < 0) {
+        cleanup(0);
+        return 1;
+    }
+    std::cout << "[Helper] Virtual input device created." << std::endl;
+    
+    std::cout << "[Helper] Launching worker threads. Press Ctrl+C to exit." << std::endl;
+    std::thread keyboard_reader(evdev_reader_thread, keyboard_path);
+    std::thread mouse_reader(evdev_reader_thread, mouse_path);
+    std::thread processor(command_processor_thread);
+    std::thread special_actions(special_action_thread);
+    std::thread fastkey(fastkey_thread);
+
+    keyboard_reader.join();
+    mouse_reader.join();
+    processor.join();
+    special_actions.join();
+    fastkey.join();
+    
+    cleanup(0);
+    return 0;
+}
+
+void cleanup(int signum) {
+    std::cout << "\nCleaning up..." << std::endl;
+    
+    // Clean up network traffic control rules
+    {
+        std::lock_guard<std::mutex> lock(g_lagswitch_mutex);
+        if (!g_lagswitch_iface.empty() && is_safe_iface_name(g_lagswitch_iface)) {
+            std::cout << "[Helper] Removing network traffic control rules from " << g_lagswitch_iface << std::endl;
+            tc_clear_rules_locked(g_lagswitch_iface);
+        }
+    }
+    
+    if (uinput_fd >= 0) {
+        ioctl(uinput_fd, UI_DEV_DESTROY);
+        close(uinput_fd);
+    }
+    if (shared_data != nullptr && shared_data != MAP_FAILED) {
+        munmap(shared_data, sizeof(SharedMemory));
+    }
+    unlink(MM_FILE_PATH);
+    exit(0);
+}
+
+
+void fastkey_thread() {
+    while (true) {
+        const bool bhop_enabled = isbhop.load(std::memory_order_acquire);
+        const bool desync_enabled = isdesync.load(std::memory_order_acquire);
+
+        if (bhop_enabled) {
+            bool space_pressed = shared_data->key_states[0x20].load(std::memory_order_acquire);
+            if (space_pressed) {
+                int delay = bhop_delay.load(std::memory_order_acquire);
+                if (delay < 1) delay = 1;
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(delay / 2));
+                emit_uinput(EV_KEY, KEY_SPACE, 0);
+                emit_uinput(EV_SYN, SYN_REPORT, 0);
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(delay / 2));
+                emit_uinput(EV_KEY, KEY_SPACE, 1);
+                emit_uinput(EV_SYN, SYN_REPORT, 0);
+            }
+        }
+
+        if (desync_enabled) {
+            const int slot = desync_itemslot.load(std::memory_order_acquire);
+            if (slot >= 1 && slot <= 9) {
+                const int keycode = KEY_1 + (slot - 1);
+                std::this_thread::sleep_for(std::chrono::nanoseconds(100));
+                emit_uinput(EV_KEY, keycode, 1);
+                emit_uinput(EV_SYN, SYN_REPORT, 0);
+                std::this_thread::sleep_for(std::chrono::nanoseconds(100));
+                emit_uinput(EV_KEY, keycode, 0);
+                emit_uinput(EV_SYN, SYN_REPORT, 0);
+            }
+        }
+
+        if (!bhop_enabled && !desync_enabled) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
 }
 
 void command_processor_thread() {
