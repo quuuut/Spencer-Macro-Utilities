@@ -716,6 +716,7 @@ void SetLagswitchDirection(bool inbound, bool outbound) {
     if (g_isLinuxWine) {
         Command cmd = {};
         cmd.type.store(CMD_LAGSWITCH_SET_DIRECTION, std::memory_order_relaxed);
+        printf("Setting lagswitch direction: %d (inbound=%d, outbound=%d)\n", dir, inbound, outbound);
         cmd.value.store(dir, std::memory_order_relaxed);
         EnqueueCommand(cmd);
         lagswitchinbound = inbound;

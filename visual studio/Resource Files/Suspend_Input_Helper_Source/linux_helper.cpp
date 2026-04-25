@@ -199,6 +199,9 @@ static void apply_lagswitch_tc_locked() {
     if (g_lagswitch_iface.empty()) {
         g_lagswitch_iface = detect_default_iface();
     }
+    std::string in = g_lagswitch_inbound ? "true" : "false";
+    std::string out = g_lagswitch_outbound ? "true" : "false";
+    printf("inbound: %s, outbound: %s", in.c_str(), out.c_str());
     if (!is_safe_iface_name(g_lagswitch_iface)) {
         printf("[Helper] Lagswitch: no valid network interface found.\n");
         return;
