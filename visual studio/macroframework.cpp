@@ -3134,8 +3134,12 @@ static void RunGUI()
 					ImGui::Separator();
 
 					// If filters changed and driver is active, force restart
-					if (filter_changed && bWinDivertEnabled) {
-						SafeCloseWinDivert();
+					if (filter_changed) {
+						if (g_isLinuxWine) {
+							SetLagswitchDirection(lagswitchinbound, lagswitchoutbound);
+						} else {
+							SafeCloseWinDivert();
+						}
 					}
 					ImGui::Checkbox("Show Lagswitch Status Overlay",
 							&show_lag_overlay);
