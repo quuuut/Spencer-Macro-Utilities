@@ -48,7 +48,7 @@ jobs:
           ./appimagetool.AppImage AppDir
           
       - name: Upload AppImage
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: suspend-appimage
           path: "*.AppImage"
