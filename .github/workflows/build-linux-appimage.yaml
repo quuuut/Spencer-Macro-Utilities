@@ -17,9 +17,8 @@ jobs:
       - name: Build Executable
         run: |
           mkdir -p build
-          cd build
-          cmake ..
-          make
+          cmake -Bbuild -H.
+          cmake --build build
       
       - name: Create AppImage framework 
         run: |
