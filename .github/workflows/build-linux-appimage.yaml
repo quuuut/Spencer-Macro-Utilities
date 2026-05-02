@@ -14,6 +14,11 @@ jobs:
         with:
           fetch-depth: 2
 
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libgl1-mesa-dev libglu1-mesa-dev
+
       - name: Build Executable
         run: |
           mkdir -p build
@@ -36,6 +41,7 @@ jobs:
           cp AppImage/SMU.png AppDir/usr/share/icons/hicolor/32x32/apps/
 
           chmod +x AppDir/AppRun
+
       - name: Download appimagetool
         run: |
           RELEASE=$(gh api https://api.github.com/repos/AppImage/appimagetool/releases/latest)
