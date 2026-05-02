@@ -13,12 +13,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 2
+          ref: linux-port-dev
 
       - name: Build Executable
         run: |
           mkdir -p build
-          cmake -Bbuild -H.
-          cmake --build build
+          cd build
+          cmake ..
+          make
       
       - name: Create AppImage framework 
         run: |
